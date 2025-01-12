@@ -201,12 +201,6 @@ function extractTextContent(message) {
         sender.toLowerCase() === 'noreply@winline.kz' &&
         (errorKeywords.test(subject) || errorKeywords.test(body));
 
-    // Логирование
-    console.log(`🔍 Отправитель: ${sender}`);
-    console.log(`🔍 Тема сообщения: ${subject}`);
-    console.log(`🔍 Тело сообщения: ${body}`);
-    console.log(`🔍 Ключевые слова найдены: ${errorKeywords.test(subject + body)}`);
-    console.log(`❓ Это ошибка: ${isError}`);
 
     return {
         id: message.id,
