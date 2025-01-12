@@ -304,7 +304,7 @@ ${messageList}
             model: 'GigaChat:latest',
             temperature: 0.80,
             n: 1,
-            max_tokens: 512,
+            max_tokens: 3000,
             repetition_penalty: 1.07,
             stream: false,
             messages: [
