@@ -223,7 +223,7 @@ function extractTextContent(message) {
     // subject = message.subject || 'Без темы';
 
     // Логика определения «ошибки»
-    const errorKeywords = /ошибка|failed|error|ошибки|exception|critical/i;
+    const errorKeywords = /ошибка|оповещение|failed|error|ошибки|exception|critical/i;
     const isError =
         sender.toLowerCase() === 'noreply@winline.kz' &&
         (errorKeywords.test(subject) || errorKeywords.test(body));
