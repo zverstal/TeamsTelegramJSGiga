@@ -21,8 +21,8 @@ const msalConfig = {
 
 // Переменные для отслеживания состояния
 let lastProcessedMessageId = null;       // Последний обработанный ID сообщения
-const collectedErrors = [];             // Сбор ошибок для последующей сводки
-const processedErrorSubjects = new Set(); // Сохранение тем ошибок (чтобы не дублировать уведомления)
+const collectedErrors = [];                // Сбор ошибок для последующей сводки
+const processedErrorSubjects = new Set();  // Сохранение тем ошибок (чтобы не дублировать уведомления)
 
 // Пути к файлам состояния
 const lastMessageIdFile = path.join(__dirname, 'lastMessageId.txt');
@@ -115,7 +115,6 @@ loadProcessedErrorSubjects();
  */
 async function getMicrosoftToken() {
     const cca = new ConfidentialClientApplication(msalConfig);
-
     const tokenRequest = {
         scopes: ['https://graph.microsoft.com/.default'],
     };
@@ -131,70 +130,8 @@ async function getMicrosoftToken() {
 }
 
 /**
- * Получение токена GigaChat (для суммаризации)
- */
-async function getGigaChatToken() {
-    const data = new URLSearchParams({ 'scope': 'GIGACHAT_API_PERS' });
-    const config = {
-        method: 'post',
-        url: 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth',
-        headers: {
-            'RqUID': '6f0b1291-c7f3-43c6-bb2e-9f3efb2dc98e',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Authorization': `Bearer ${process.env.GIGACHAT_API_KEY}`,
-        },
-        data: data,
-        httpsAgent: new https.Agent({ rejectUnauthorized: false }),
-    };
-
-    try {
-        const response = await axios.request(config);
-        console.log('🔑 GigaChat токен получен.');
-        return response.data.access_token;
-    } catch (error) {
-        console.error('❌ Ошибка получения GigaChat токена:', error.message);
-        return null;
-    }
-}
-
-/**
- * Пример (опционально) — «склейка» сообщений, 
- * если у вас действительно бывают ситуации, 
- * когда одно сообщение в Teams приходит под разными ID.
- * Раскомментируйте, если нужно.
- */
-// function unifyMessages(messages, timeWindowMinutes = 3) {
-//     const unified = [];
-//     let current = null;
-
-//     // Сортируем по времени
-//     const sorted = [...messages].sort((a, b) => new Date(a.createdDateTime) - new Date(b.createdDateTime));
-
-//     for (const msg of sorted) {
-//         if (current) {
-//             const sameSender = (current.sender === msg.sender);
-//             const sameSubject = (current.subject === msg.subject);
-//             const timeDiff = Math.abs(new Date(msg.createdDateTime) - new Date(current.createdDateTime));
-//             const withinTimeWindow = timeDiff < timeWindowMinutes * 60_000;
-
-//             if (sameSender && sameSubject && withinTimeWindow) {
-//                 current.body += `\n\n---\n\n${msg.body}`;
-//                 console.log(`🔗 Склеили сообщение ID=${msg.id} c ID=${current.id}`);
-//             } else {
-//                 unified.push(current);
-//                 current = { ...msg };
-//             }
-//         } else {
-//             current = { ...msg };
-//         }
-//     }
-//     if (current) unified.push(current);
-//     return unified;
-// }
-
-/**
- * Извлекает информацию из одного сообщения. 
- * Считаем, что Teams уже возвращает 1 сообщение = 1 ID.
+ * Функция для извлечения информации из одного сообщения.
+ * Считаем, что Teams возвращает 1 сообщение = 1 ID.
  */
 function extractTextContent(message) {
     // Убираем HTML-теги
@@ -204,7 +141,7 @@ function extractTextContent(message) {
     let sender = 'Неизвестно';
     let subject = 'Без темы';
 
-    // Разделяем на строки, чтобы при желании найти "Отправитель:" / "Тема:"
+    // Разделяем на строки, чтобы найти "Отправитель:" или "Тема:"
     const lines = text.split('\n').map(line => line.trim());
     let body = '';
 
@@ -218,11 +155,7 @@ function extractTextContent(message) {
         }
     }
 
-    // Если же в Teams API есть message.from / message.subject, можно брать напрямую:
-    // sender = message.from?.emailAddress?.address || 'Неизвестно';
-    // subject = message.subject || 'Без темы';
-
-    // Логика определения «ошибки»
+    // Логика определения "ошибки"
     const errorKeywords = /ошибка|оповещение|failed|error|ошибки|exception|critical/i;
     const isError =
         sender.toLowerCase() === 'noreply@winline.kz' &&
@@ -269,63 +202,59 @@ async function fetchTeamsMessages(token, teamId, channelId) {
 }
 
 /**
- * Суммаризация сообщений через GigaChat.
- * Передаём в промт ID каждого сообщения (и добавляем lastProcessedMessageId).
+ * Суммаризация сообщений через OpenAI.
+ * Используем модель "gpt-4o-mini" и ключ OPENAI_API_KEY.
  */
-async function summarizeMessages(messages, token, lastMsgId) {
+async function summarizeMessages(messages, lastMsgId) {
     try {
-        // Формируем список самих сообщений
+        // Формируем список сообщений
         const messageList = messages.map((msg) => {
             return `ID: ${msg.id}\nОтправитель: ${msg.sender}\nТема: ${msg.subject}\nТекст сообщения: ${msg.body}`;
         }).join('\n\n');
 
-        const improvedPrompt = `
-        (Последний обработанный ID: ${lastMsgId})
-        
-        Проанализируй следующие сообщения из Teams. Для каждого сообщения, идентифицированного по уникальному ID, составь краткое, точное и понятное резюме, строго опираясь на фактическое содержание. В резюме обязательно должны быть отражены все технические детали, если они присутствуют.
-        
-        При составлении резюме соблюдай следующие правила:
-        1. ID сообщения: обязательно укажи уникальный идентификатор.
-        2. Отправитель: укажи email отправителя; если возможно, добавь ФИО, должность и название компании, основываясь на подписи или домене почты. Не включай служебную информацию, не влияющую на суть сообщения.
-        3. Тема: если тема явно указана или может быть определена из контекста, обязательно укажи её. Если сообщение является ответом (с пометкой "RE"), зафиксируй, что тема берётся из контекста предыдущего сообщения.
-        4. Содержание: составь одно-два предложения, в которых точно опиши основное содержание сообщения. Если присутствуют технические детали (например, ошибки, задержки, зависания элементов, требования к действиям по устранению проблемы и т.п.), обязательно включи их в описание. Не додумывай недостающую информацию.
-        5. Игнорируй элементы, не влияющие на понимание сути (например, подписи, ссылки и неинформативные фразы).
-        
-        Составь резюме для следующих сообщений:
-        
-        ${messageList}
+        const prompt = `
+(Последний обработанный ID: ${lastMsgId})
+
+Проанализируй следующие сообщения из Teams. Для каждого сообщения, идентифицированного по уникальному ID, составь краткое, точное и понятное резюме, строго опираясь на фактическое содержание. В резюме обязательно должны быть отражены все технические детали, если они присутствуют.
+
+Правила:
+1. ID сообщения: обязательно укажи уникальный идентификатор.
+2. Отправитель: укажи email отправителя; если возможно, добавь ФИО, должность и название компании (на основе подписи или домена почты).
+3. Тема: если тема явно указана или может быть определена из контекста, укажи её. Если сообщение является ответом (с пометкой "RE"), зафиксируй, что тема берётся из контекста предыдущего сообщения.
+4. Содержание: составь одно-два предложения, точно описывающих содержание сообщения. Обязательно включи все технические детали (например, ошибки, задержки, зависания, требования к действиям), не додумывая недостающую информацию.
+5. Игнорируй элементы, не влияющие на понимание сути (например, подписи, ссылки и прочие неинформативные фразы).
+
+Составь резюме для следующих сообщений:
+
+${messageList}
         `.trim();
-        
 
         const requestData = {
-            model: 'GigaChat:latest',
+            model: 'gpt-4o-mini',
             temperature: 0.80,
-            n: 1,
             max_tokens: 1000,
-            repetition_penalty: 1.07,
-            stream: false,
             messages: [
                 {
                     role: 'user',
-                    content: improvedPrompt,
+                    content: prompt,
                 },
             ],
         };
 
         const response = await axios.post(
-            'https://gigachat.devices.sberbank.ru/api/v1/chat/completions',
+            'https://api.openai.com/v1/chat/completions',
             requestData,
             {
                 headers: {
                     'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
+                    Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
                 },
                 httpsAgent: new https.Agent({ rejectUnauthorized: false }),
             }
         );
 
         console.log('📝 Суммаризация сообщений завершена.');
-        return response.data.choices[0]?.message?.content || 'Нет ответа от GigaChat.';
+        return response.data.choices[0]?.message?.content || 'Нет ответа от OpenAI.';
     } catch (err) {
         console.error('❌ Ошибка при суммаризации сообщений:', err.message);
         return 'Не удалось получить резюме сообщений.';
@@ -333,15 +262,14 @@ async function summarizeMessages(messages, token, lastMsgId) {
 }
 
 /**
- * Отправка сводки ошибок раз в час (или при нужном интервале).
+ * Отправка сводки ошибок раз в час.
  */
 async function sendErrorSummaryIfNeeded() {
     if (collectedErrors.length === 0) {
         console.log('📭 Нет новых ошибок для сводки.');
-        return; // Нет новых ошибок для сводки
+        return;
     }
 
-    // Формируем сводку
     const errorCountBySubject = {};
 
     collectedErrors.forEach(error => {
@@ -363,11 +291,10 @@ async function sendErrorSummaryIfNeeded() {
         summary += `📌 *Тема:* ${subject}\n- *Количество:* ${data.count}\n- *Последнее появление:* ${lastDate}\n\n`;
     }
 
-    // Отправляем сводку
     try {
         await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, summary, { parse_mode: 'Markdown' });
         console.log('📤 Сводка ошибок отправлена в Telegram.');
-        collectedErrors.length = 0; // Очистить собранные ошибки после отправки
+        collectedErrors.length = 0;
     } catch (err) {
         console.error('❌ Ошибка при отправке сводки ошибок в Telegram:', err.message);
     }
@@ -383,12 +310,6 @@ async function processTeamsMessages() {
         return;
     }
 
-    const gigachatToken = await getGigaChatToken();
-    if (!gigachatToken) {
-        console.error('❌ Не удалось получить токен GigaChat.');
-        // Можно продолжить работу без суммаризации
-    }
-
     const teamId = process.env.TEAM_ID;
     const channelId = process.env.CHANNEL_ID;
 
@@ -398,7 +319,6 @@ async function processTeamsMessages() {
         return;
     }
 
-    // Фильтрация новых сообщений по ID
     const newMessages = messages.filter(msg => {
         if (!lastProcessedMessageId) return true;
         return msg.id > lastProcessedMessageId;
@@ -409,16 +329,10 @@ async function processTeamsMessages() {
         return;
     }
 
-    // Обновляем lastProcessedMessageId
     lastProcessedMessageId = newMessages[newMessages.length - 1].id;
     await saveLastProcessedMessageId(lastProcessedMessageId);
 
-    // (Опционально) "Склеиваем" сообщения, если нужно:
-    // const unifiedMessages = unifyMessages(newMessages); 
-    // const errors = unifiedMessages.filter(msg => msg.isError);
-    // const normalMessages = unifiedMessages.filter(msg => !msg.isError);
-
-    // Без склейки:
+    // Фильтрация ошибок и обычных сообщений
     const errors = newMessages.filter(msg => msg.isError);
     const normalMessages = newMessages.filter(msg => !msg.isError);
 
@@ -426,30 +340,26 @@ async function processTeamsMessages() {
     if (errors.length > 0) {
         for (const errorMsg of errors) {
             const errorSubject = errorMsg.subject;
-
-            // Проверяем, не отправляли ли мы уже эту тему
             if (!processedErrorSubjects.has(errorSubject)) {
                 const errorMessage = `❗ *Новая ошибка обнаружена:*\n\n📌 *Тема:* ${errorMsg.subject}`;
                 try {
                     await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, errorMessage, { parse_mode: 'Markdown' });
                     console.log('📤 Ошибка отправлена в Telegram.');
-
                     processedErrorSubjects.add(errorSubject);
                     await saveProcessedErrorSubjects();
                 } catch (err) {
                     console.error('❌ Ошибка при отправке сообщения об ошибке в Telegram:', err.message);
                 }
             } else {
-                // Если тема уже встречалась, добавляем её в сводку
                 collectedErrors.push(errorMsg);
                 console.log(`📥 Ошибка с темой "${errorSubject}" добавлена в сводку.`);
             }
         }
     }
 
-    // Обработка "нормальных" сообщений (суммаризация)
-    if (normalMessages.length > 0 && gigachatToken) {
-        const summary = await summarizeMessages(normalMessages, gigachatToken, lastProcessedMessageId);
+    // Обработка нормальных сообщений (суммаризация)
+    if (normalMessages.length > 0) {
+        const summary = await summarizeMessages(normalMessages, lastProcessedMessageId);
         if (summary) {
             await bot.api.sendMessage(
                 process.env.TELEGRAM_CHAT_ID,
@@ -461,7 +371,7 @@ async function processTeamsMessages() {
     }
 }
 
-// Запускаем задачу cron для обработки каждую минуту
+// Запуск задачи cron для обработки сообщений каждую минуту
 cron.schedule('* * * * *', () => {
     console.log('🔄 Запуск обработки сообщений Teams...');
     processTeamsMessages();
