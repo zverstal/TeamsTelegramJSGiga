@@ -126,8 +126,6 @@ async function getMicrosoftToken() {
         return null;
     }
 }
-    }
-}
 
 function extractTextContent(message) {
     const rawText = message.body?.content || '';
