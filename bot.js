@@ -23,6 +23,8 @@ const msalConfig = {
 let lastProcessedMessageId = null;
 let lastSummaryMessage = null;
 let lastSummaryText = '';
+let lastErrorSummaryDetails = null;
+
 const collectedErrors = [];
 const processedErrorSubjects = new Set();
 
@@ -206,6 +208,9 @@ async function sendErrorSummaryIfNeeded() {
         summary += `📌 *Тема:* ${subject}\n- *Количество:* ${data.count}\n- *Последнее появление:* ${lastDate}\n`;
     }
 
+        // Сохраняем детали перед очисткой
+    lastErrorSummaryDetails = collectedErrors.map(e => ({ type: e.type, id: e.extractedId }));
+
     lastSummaryText = summary;
     const message = await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, summary, {
         parse_mode: 'Markdown',
@@ -219,8 +224,8 @@ async function sendErrorSummaryIfNeeded() {
         chat_id: message.chat.id,
     };
 
+    // Очистка после сохранения
     collectedErrors.length = 0;
-}
 
 async function processTeamsMessages() {
     console.log('🔄 Запуск обработки сообщений Teams...');
@@ -269,18 +274,23 @@ bot.on('callback_query:data', async (ctx) => {
     if (!lastSummaryMessage) return;
 
     if (action === 'show_details') {
-        const grouped = collectedErrors.reduce((acc, err) => {
+        if (!lastErrorSummaryDetails || lastErrorSummaryDetails.length === 0) {
+            await ctx.answerCallbackQuery({ text: 'Нет данных для отображения.', show_alert: true });
+            return;
+        }
+    
+        const grouped = lastErrorSummaryDetails.reduce((acc, err) => {
             acc[err.type] = acc[err.type] || [];
-            acc[err.type].push(err.extractedId);
+            acc[err.type].push(err.id);
             return acc;
         }, {});
-
+    
         let details = '📋 *Детали ошибок по типам:*\n';
         for (const [type, ids] of Object.entries(grouped)) {
             const uniqueIds = [...new Set(ids)].sort();
             details += `*${type}* (${uniqueIds.length}):\n\`${uniqueIds.join(', ')}\`\n`;
         }
-
+    
         await ctx.answerCallbackQuery();
         await bot.api.editMessageText(
             lastSummaryMessage.chat_id,
@@ -294,6 +304,7 @@ bot.on('callback_query:data', async (ctx) => {
             }
         );
     }
+    
 
     if (action === 'hide_details') {
         await ctx.answerCallbackQuery();
