@@ -55,10 +55,6 @@ function loadLastProcessedMessageId() {
         console.error('❌ Ошибка при загрузке lastMessageId.txt:', error);
     }
 }
-    } catch (error) {
-        console.error('Ошибка загрузки lastMessageId:', error);
-    }
-}
 
 function loadProcessedErrorSubjects() {
     try {
@@ -82,10 +78,6 @@ function loadProcessedErrorSubjects() {
         console.error('❌ Ошибка при загрузке processedErrorSubjects.json:', error);
     }
 }
-    } catch (error) {
-        console.error('Ошибка загрузки processedErrorSubjects:', error);
-    }
-}
 
 async function saveProcessedErrorSubjects() {
     try {
@@ -95,7 +87,6 @@ async function saveProcessedErrorSubjects() {
         console.error('❌ Ошибка при сохранении processedErrorSubjects.json:', error);
     }
 }
-
 
 async function resetProcessedErrorSubjects() {
     try {
@@ -109,7 +100,6 @@ async function resetProcessedErrorSubjects() {
         console.error('❌ Ошибка при сбросе processedErrorSubjects:', error);
     }
 }
-
 
 loadLastProcessedMessageId();
 loadProcessedErrorSubjects();
@@ -192,8 +182,6 @@ async function fetchTeamsMessages(token, teamId, channelId) {
         return [];
     }
 }
-    }
-}
 
 async function sendErrorSummaryIfNeeded() {
     if (collectedErrors.length === 0) return;
@@ -212,18 +200,18 @@ async function sendErrorSummaryIfNeeded() {
         }
     });
 
-    let summary = '🔍 *Сводка ошибок за последний час:*\n\n';
+    let summary = '🔍 *Сводка ошибок за последний час:*\n';
     for (const [subject, data] of Object.entries(errorCountBySubject)) {
         const lastDate = new Date(data.lastOccurred).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
-        summary += `📌 *Тема:* ${subject}\n- *Количество:* ${data.count}\n- *Последнее появление:* ${lastDate}\n\n`;
+        summary += `📌 *Тема:* ${subject}\n- *Количество:* ${data.count}\n- *Последнее появление:* ${lastDate}\n`;
     }
 
     lastSummaryText = summary;
     const message = await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, summary, {
         parse_mode: 'Markdown',
         reply_markup: {
-            inline_keyboard: [[{ text: '📋 Подробнее', callback_data: 'show_details' }]]
-        }
+            inline_keyboard: [[{ text: '📋 Подробнее', callback_data: 'show_details' }]],
+        },
     });
 
     lastSummaryMessage = {
@@ -264,9 +252,7 @@ async function processTeamsMessages() {
         errorMsg.extractedId = id;
 
         if (!processedErrorSubjects.has(errorMsg.subject)) {
-            const msgText = `❗ *Новая ошибка обнаружена:*
-
-📌 *Тема:* ${errorMsg.subject}`;
+            const msgText = `❗ *Новая ошибка обнаружена:*\n📌 *Тема:* ${errorMsg.subject}`;
             await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, msgText, { parse_mode: 'Markdown' });
             console.log('📤 Ошибка отправлена в Telegram.');
             processedErrorSubjects.add(errorMsg.subject);
@@ -274,19 +260,6 @@ async function processTeamsMessages() {
         } else {
             collectedErrors.push(errorMsg);
             console.log(`📥 Ошибка с темой "${errorMsg.subject}" добавлена в сводку.`);
-        }
-    }
-} = getErrorTypeAndIdentifier(errorMsg);
-        errorMsg.type = type;
-        errorMsg.extractedId = id;
-
-        if (!processedErrorSubjects.has(errorMsg.subject)) {
-            const msgText = `❗ *Новая ошибка обнаружена:*\n\n📌 *Тема:* ${errorMsg.subject}`;
-            await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, msgText, { parse_mode: 'Markdown' });
-            processedErrorSubjects.add(errorMsg.subject);
-            await saveProcessedErrorSubjects();
-        } else {
-            collectedErrors.push(errorMsg);
         }
     }
 }
@@ -302,10 +275,10 @@ bot.on('callback_query:data', async (ctx) => {
             return acc;
         }, {});
 
-        let details = '📋 *Детали ошибок по типам:*\n\n';
+        let details = '📋 *Детали ошибок по типам:*\n';
         for (const [type, ids] of Object.entries(grouped)) {
             const uniqueIds = [...new Set(ids)].sort();
-            details += `*${type}* (${uniqueIds.length}):\n\`${uniqueIds.join(', ')}\`\n\n`;
+            details += `*${type}* (${uniqueIds.length}):\n\`${uniqueIds.join(', ')}\`\n`;
         }
 
         await ctx.answerCallbackQuery();
@@ -316,8 +289,8 @@ bot.on('callback_query:data', async (ctx) => {
             {
                 parse_mode: 'Markdown',
                 reply_markup: {
-                    inline_keyboard: [[{ text: '🔼 Скрыть', callback_data: 'hide_details' }]]
-                }
+                    inline_keyboard: [[{ text: '🔼 Скрыть', callback_data: 'hide_details' }]],
+                },
             }
         );
     }
@@ -331,8 +304,8 @@ bot.on('callback_query:data', async (ctx) => {
             {
                 parse_mode: 'Markdown',
                 reply_markup: {
-                    inline_keyboard: [[{ text: '📋 Подробнее', callback_data: 'show_details' }]]
-                }
+                    inline_keyboard: [[{ text: '📋 Подробнее', callback_data: 'show_details' }]],
+                },
             }
         );
     }
@@ -343,5 +316,7 @@ cron.schedule('0 * * * *', () => sendErrorSummaryIfNeeded());
 cron.schedule('5 0 * * *', () => resetProcessedErrorSubjects(), { timezone: 'Europe/Moscow' });
 
 bot.command('start', (ctx) => ctx.reply('✅ Бот запущен. Обработка сообщений Teams включена.'));
+
 bot.catch((err) => console.error('Ошибка бота:', err));
+
 bot.start();
