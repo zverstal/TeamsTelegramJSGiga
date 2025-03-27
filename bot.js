@@ -32,7 +32,11 @@ const processedSubjectsFile = path.join(__dirname, 'processedErrorSubjects.json'
 async function saveLastProcessedMessageId(id) {
     try {
         await fs.promises.writeFile(lastMessageIdFile, id, 'utf8');
+        console.log(`✅ Сохранен последний ID сообщения: ${id}`);
     } catch (error) {
+        console.error('❌ Ошибка при сохранении lastMessageId.txt:', error);
+    }
+} catch (error) {
         console.error('Ошибка сохранения lastMessageId:', error);
     }
 }
@@ -41,8 +45,19 @@ function loadLastProcessedMessageId() {
     try {
         if (fs.existsSync(lastMessageIdFile)) {
             const data = fs.readFileSync(lastMessageIdFile, 'utf8').trim();
-            if (data) lastProcessedMessageId = data;
+            if (data) {
+                lastProcessedMessageId = data;
+                console.log(`📥 Загружен последний ID сообщения: ${lastProcessedMessageId}`);
+            } else {
+                console.log('ℹ️ lastMessageId.txt пуст. Начинаем с нуля.');
+            }
+        } else {
+            console.log('ℹ️ Файл lastMessageId.txt не найден. Начинаем с нуля.');
         }
+    } catch (error) {
+        console.error('❌ Ошибка при загрузке lastMessageId.txt:', error);
+    }
+}
     } catch (error) {
         console.error('Ошибка загрузки lastMessageId:', error);
     }
@@ -52,8 +67,24 @@ function loadProcessedErrorSubjects() {
     try {
         if (fs.existsSync(processedSubjectsFile)) {
             const data = fs.readFileSync(processedSubjectsFile, 'utf8').trim();
-            if (data) JSON.parse(data).forEach(subject => processedErrorSubjects.add(subject));
+            if (data) {
+                const subjects = JSON.parse(data);
+                if (Array.isArray(subjects)) {
+                    subjects.forEach(subject => processedErrorSubjects.add(subject));
+                    console.log(`📥 Загружено ${processedErrorSubjects.size} обработанных тем ошибок.`);
+                } else {
+                    console.warn('⚠️ processedErrorSubjects.json не содержит массива. Инициализируем пустым набором.');
+                }
+            } else {
+                console.log('ℹ️ processedErrorSubjects.json пуст. Начинаем с пустого набора.');
+            }
+        } else {
+            console.log('ℹ️ Файл processedErrorSubjects.json не найден. Начинаем с пустого набора.');
         }
+    } catch (error) {
+        console.error('❌ Ошибка при загрузке processedErrorSubjects.json:', error);
+    }
+}
     } catch (error) {
         console.error('Ошибка загрузки processedErrorSubjects:', error);
     }
@@ -62,7 +93,11 @@ function loadProcessedErrorSubjects() {
 async function saveProcessedErrorSubjects() {
     try {
         await fs.promises.writeFile(processedSubjectsFile, JSON.stringify([...processedErrorSubjects], null, 2), 'utf8');
+        console.log('✅ processedErrorSubjects сохранены.');
     } catch (error) {
+        console.error('❌ Ошибка при сохранении processedErrorSubjects.json:', error);
+    }
+} catch (error) {
         console.error('Ошибка сохранения processedErrorSubjects:', error);
     }
 }
@@ -71,7 +106,14 @@ async function resetProcessedErrorSubjects() {
     try {
         if (fs.existsSync(processedSubjectsFile)) {
             await fs.promises.unlink(processedSubjectsFile);
+            console.log('🧹 processedErrorSubjects.json удален.');
         }
+        processedErrorSubjects.clear();
+        console.log('✅ Счётчик тем ошибок сброшен.');
+    } catch (error) {
+        console.error('❌ Ошибка при сбросе processedErrorSubjects:', error);
+    }
+}
         processedErrorSubjects.clear();
     } catch (error) {
         console.error('Ошибка сброса processedErrorSubjects:', error);
@@ -86,10 +128,13 @@ async function getMicrosoftToken() {
     const tokenRequest = { scopes: ['https://graph.microsoft.com/.default'] };
     try {
         const response = await cca.acquireTokenByClientCredential(tokenRequest);
+        console.log('🔑 Microsoft OAuth2 токен получен.');
         return response.accessToken;
     } catch (err) {
-        console.error('Ошибка получения токена Microsoft:', err.message);
+        console.error('❌ Ошибка получения токена Microsoft:', err.message);
         return null;
+    }
+}
     }
 }
 
@@ -148,10 +193,16 @@ async function fetchTeamsMessages(token, teamId, channelId) {
         const response = await axios.get(url, {
             headers: { Authorization: `Bearer ${token}` },
         });
+        console.log(`📥 Найдено ${response.data.value.length} сообщений в канале.`);
         return response.data.value.map(extractTextContent).sort((a, b) => new Date(a.createdDateTime) - new Date(b.createdDateTime));
     } catch (err) {
-        console.error('Ошибка получения сообщений из Teams:', err.message);
+        console.error(`❌ Ошибка при чтении сообщений из Teams: ${err.response?.status || 'Нет ответа'} - ${err.response?.statusText || err.message}`);
+        if (err.response?.data) {
+            console.error(`🔍 Детали ошибки: ${JSON.stringify(err.response.data)}`);
+        }
         return [];
+    }
+}
     }
 }
 
@@ -195,14 +246,24 @@ async function sendErrorSummaryIfNeeded() {
 }
 
 async function processTeamsMessages() {
+    console.log('🔄 Запуск обработки сообщений Teams...');
     const msToken = await getMicrosoftToken();
-    if (!msToken) return;
+    if (!msToken) {
+        console.error('❌ Не удалось получить токен Microsoft.');
+        return;
+    }
 
     const messages = await fetchTeamsMessages(msToken, process.env.TEAM_ID, process.env.CHANNEL_ID);
-    if (messages.length === 0) return;
+    if (messages.length === 0) {
+        console.log('📭 Нет новых сообщений для обработки.');
+        return;
+    }
 
     const newMessages = messages.filter(msg => !lastProcessedMessageId || msg.id > lastProcessedMessageId);
-    if (newMessages.length === 0) return;
+    if (newMessages.length === 0) {
+        console.log('📭 Нет новых сообщений с момента последней проверки.');
+        return;
+    }
 
     lastProcessedMessageId = newMessages[newMessages.length - 1].id;
     await saveLastProcessedMessageId(lastProcessedMessageId);
@@ -210,6 +271,21 @@ async function processTeamsMessages() {
     const errors = newMessages.filter(msg => msg.isError);
     for (const errorMsg of errors) {
         const { type, id } = getErrorTypeAndIdentifier(errorMsg);
+        errorMsg.type = type;
+        errorMsg.extractedId = id;
+
+        if (!processedErrorSubjects.has(errorMsg.subject)) {
+            const msgText = `❗ *Новая ошибка обнаружена:*\n\n📌 *Тема:* ${errorMsg.subject}`;
+            await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, msgText, { parse_mode: 'Markdown' });
+            console.log('📤 Ошибка отправлена в Telegram.');
+            processedErrorSubjects.add(errorMsg.subject);
+            await saveProcessedErrorSubjects();
+        } else {
+            collectedErrors.push(errorMsg);
+            console.log(`📥 Ошибка с темой "${errorMsg.subject}" добавлена в сводку.`);
+        }
+    }
+} = getErrorTypeAndIdentifier(errorMsg);
         errorMsg.type = type;
         errorMsg.extractedId = id;
 
