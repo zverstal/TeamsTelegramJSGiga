@@ -227,6 +227,8 @@ async function sendErrorSummaryIfNeeded() {
     // Очистка после сохранения
     collectedErrors.length = 0;
 
+}
+
 async function processTeamsMessages() {
     console.log('🔄 Запуск обработки сообщений Teams...');
     const msToken = await getMicrosoftToken();
