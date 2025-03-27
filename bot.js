@@ -275,7 +275,9 @@ async function processTeamsMessages() {
         errorMsg.extractedId = id;
 
         if (!processedErrorSubjects.has(errorMsg.subject)) {
-            const msgText = `❗ *Новая ошибка обнаружена:*\n\n📌 *Тема:* ${errorMsg.subject}`;
+            const msgText = `❗ *Новая ошибка обнаружена:*
+
+📌 *Тема:* ${errorMsg.subject}`;
             await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, msgText, { parse_mode: 'Markdown' });
             console.log('📤 Ошибка отправлена в Telegram.');
             processedErrorSubjects.add(errorMsg.subject);
