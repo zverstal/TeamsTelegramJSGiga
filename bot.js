@@ -89,6 +89,15 @@ async function getMicrosoftToken() {
     const tokenRequest = { scopes: ['https://graph.microsoft.com/.default'] };
     try {
         const response = await cca.acquireTokenByClientCredential(tokenRequest);
+        console.log('🔑 Microsoft OAuth2 токен получен.');
+        return response.accessToken;
+    } catch (err) {
+        console.error('❌ Ошибка получения токена Microsoft:', err.message);
+        return null;
+    }
+};
+    try {
+        const response = await cca.acquireTokenByClientCredential(tokenRequest);
         return response.accessToken;
     } catch (err) {
         console.error('Ошибка получения токена Microsoft:', err.message);
@@ -146,12 +155,14 @@ function getErrorTypeAndIdentifier(errorMsg) {
 }
 
 async function fetchTeamsMessages(token, teamId, channelId) {
-    const url = `https://graph.microsoft.com/v1.0/teams/${teamId}/channels/${channelId}/messages`;
+    console.log('📡 Чтение сообщений из Teams...');teamId}/channels/${channelId}/messages`;
     try {
         const response = await axios.get(url, {
             headers: { Authorization: `Bearer ${token}` },
         });
-        return response.data.value.map(extractTextContent).sort((a, b) => new Date(a.createdDateTime) - new Date(b.createdDateTime));
+        const messages = response.data.value.map(extractTextContent);
+        console.log(`📥 Найдено ${messages.length} сообщений.`);
+        return messages.sort((a, b) => new Date(a.createdDateTime) - new Date(b.createdDateTime));
     } catch (err) {
         console.error(`Ошибка при чтении сообщений из Teams: ${err.message}`);
         return [];
@@ -159,10 +170,7 @@ async function fetchTeamsMessages(token, teamId, channelId) {
 }
 
 async function summarizeMessages(messages, lastMsgId) {
-    try {
-        const messageList = messages.map((msg) => {
-            const replyIndicator = msg.isReply ? '\nТип: Ответ (тема из контекста предыдущего сообщения)' : '';
-            return `ID: ${msg.id}\nОтправитель: ${msg.sender}\nТема: ${msg.subject}${replyIndicator}\nТекст сообщения: ${msg.body}`;
+    console.log('🧠 Запрос к OpenAI для суммаризации...');msg.id}\nОтправитель: ${msg.sender}\nТема: ${msg.subject}${replyIndicator}\nТекст сообщения: ${msg.body}`;
         }).join('\n\n');
 
         const prompt = `
@@ -197,7 +205,9 @@ ${messageList}
             httpsAgent: new https.Agent({ rejectUnauthorized: false }),
         });
 
-        return response.data.choices[0]?.message?.content || 'Нет ответа от OpenAI.';
+        const result = response.data.choices[0]?.message?.content || 'Нет ответа от OpenAI.';
+        console.log('✅ Суммаризация завершена.');
+        return result;
     } catch (err) {
         console.error('Ошибка при суммаризации сообщений:', err.message);
         return 'Не удалось получить резюме сообщений.';
@@ -221,10 +231,14 @@ async function sendErrorSummaryIfNeeded() {
         }
     });
 
-    let summary = '🔍 *Сводка ошибок за последний час:*\n';
+    let summary = '🔍 *Сводка ошибок за последний час:*
+';
     for (const [subject, data] of Object.entries(errorCountBySubject)) {
         const lastDate = new Date(data.lastOccurred).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
-        summary += `📌 *Тема:* ${subject}\n- *Количество:* ${data.count}\n- *Последнее появление:* ${lastDate}\n`;
+        summary += `📌 *Тема:* ${subject}
+- *Количество:* ${data.count}
+- *Последнее появление:* ${lastDate}
+`;
     }
 
     lastErrorSummaryDetails = collectedErrors.map(e => ({ type: e.type, id: e.extractedId }));
@@ -267,7 +281,8 @@ async function processTeamsMessages() {
         errorMsg.extractedId = id;
 
         if (!processedErrorSubjects.has(errorMsg.subject)) {
-            const msgText = `❗ *Новая ошибка обнаружена:*\n📌 *Тема:* ${errorMsg.subject}`;
+            const msgText = `❗ *Новая ошибка обнаружена:*
+📌 *Тема:* ${errorMsg.subject}`;
             await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, msgText, { parse_mode: 'Markdown' });
             processedErrorSubjects.add(errorMsg.subject);
             await saveProcessedErrorSubjects();
@@ -279,7 +294,9 @@ async function processTeamsMessages() {
     if (normalMessages.length > 0) {
         const summary = await summarizeMessages(normalMessages, lastProcessedMessageId);
         if (summary) {
-            await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, `📝 *Суммаризация сообщений:*\n\n${summary}`, { parse_mode: 'Markdown' });
+            await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, `📝 *Суммаризация сообщений:*
+
+${summary}`, { parse_mode: 'Markdown' });
         }
     }
 }
@@ -300,10 +317,13 @@ bot.on('callback_query:data', async (ctx) => {
             return acc;
         }, {});
 
-        let details = '📋 *Детали ошибок по типам:*\n';
+        let details = '📋 *Детали ошибок по типам:*
+';
         for (const [type, ids] of Object.entries(grouped)) {
             const uniqueIds = [...new Set(ids)].sort();
-            details += `*${type}* (${uniqueIds.length}):\n\`${uniqueIds.join(', ')}\`\n`;
+            details += `*${type}* (${uniqueIds.length}):
+\`${uniqueIds.join(', ')}\`
+`;
         }
 
         await ctx.answerCallbackQuery();
