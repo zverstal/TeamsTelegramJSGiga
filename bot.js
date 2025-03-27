@@ -98,6 +98,15 @@ async function getMicrosoftToken() {
 };
     try {
         const response = await cca.acquireTokenByClientCredential(tokenRequest);
+        console.log('🔑 Microsoft OAuth2 токен получен.');
+        return response.accessToken;
+    } catch (err) {
+        console.error('❌ Ошибка получения токена Microsoft:', err.message);
+        return null;
+    }
+};
+    try {
+        const response = await cca.acquireTokenByClientCredential(tokenRequest);
         return response.accessToken;
     } catch (err) {
         console.error('Ошибка получения токена Microsoft:', err.message);
@@ -260,10 +269,12 @@ async function sendErrorSummaryIfNeeded() {
 }
 
 async function processTeamsMessages() {
+    console.log('🔄 Запуск обработки сообщений Teams...');
     const msToken = await getMicrosoftToken();
     if (!msToken) return;
 
     const messages = await fetchTeamsMessages(msToken, process.env.TEAM_ID, process.env.CHANNEL_ID);
+    console.log(`📬 Получено ${messages.length} сообщений.`);
     if (messages.length === 0) return;
 
     const newMessages = messages.filter(msg => !lastProcessedMessageId || msg.id > lastProcessedMessageId);
