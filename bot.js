@@ -36,9 +36,6 @@ async function saveLastProcessedMessageId(id) {
     } catch (error) {
         console.error('❌ Ошибка при сохранении lastMessageId.txt:', error);
     }
-} catch (error) {
-        console.error('Ошибка сохранения lastMessageId:', error);
-    }
 }
 
 function loadLastProcessedMessageId() {
@@ -97,10 +94,8 @@ async function saveProcessedErrorSubjects() {
     } catch (error) {
         console.error('❌ Ошибка при сохранении processedErrorSubjects.json:', error);
     }
-} catch (error) {
-        console.error('Ошибка сохранения processedErrorSubjects:', error);
-    }
 }
+
 
 async function resetProcessedErrorSubjects() {
     try {
@@ -114,11 +109,7 @@ async function resetProcessedErrorSubjects() {
         console.error('❌ Ошибка при сбросе processedErrorSubjects:', error);
     }
 }
-        processedErrorSubjects.clear();
-    } catch (error) {
-        console.error('Ошибка сброса processedErrorSubjects:', error);
-    }
-}
+
 
 loadLastProcessedMessageId();
 loadProcessedErrorSubjects();
