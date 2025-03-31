@@ -296,6 +296,30 @@ bot.on('callback_query:data', async (ctx) => {
   });
 });
 
+
+async function repairMissingButtons() {
+  db.all('SELECT id, chat_id, message_id FROM error_summaries', async (err, rows) => {
+    if (err) return console.error('Ошибка при чтении сводок из БД:', err);
+    for (const row of rows) {
+      try {
+        await bot.api.editMessageReplyMarkup(row.chat_id, row.message_id, {
+          reply_markup: new InlineKeyboard().text('📋 Подробнее', `show_details_${row.id}`),
+        });
+        console.log(`🔧 Кнопка добавлена к message_id=${row.message_id}`);
+      } catch (e) {
+        console.warn(`⛔ Не удалось обновить message_id=${row.message_id}:`, e.description);
+      }
+    }
+  });
+}
+
+bot.command('fixbuttons', async (ctx) => {
+  await ctx.reply('🔧 Начинаю восстановление кнопок...');
+  await repairMissingButtons();
+  await ctx.reply('✅ Попробовал обновить все сводки.');
+});
+
+
 cron.schedule('* * * * *', () => processTeamsMessages());
 cron.schedule('0 * * * *', () => sendErrorSummaryIfNeeded());
 cron.schedule('5 0 * * *', () => resetProcessedErrorSubjects());
