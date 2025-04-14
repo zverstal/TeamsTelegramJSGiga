@@ -21,7 +21,6 @@ const msalConfig = {
   },
 };
 
-// Инициализация БД SQLite
 let db;
 function initDatabase() {
   db = new sqlite3.Database(path.join(__dirname, 'summaries.db'), (err) => {
@@ -54,8 +53,10 @@ function initDatabase() {
         UNIQUE(source, news_id)
       )
     `);
+  });
+}
 
-initDatabase();
+initDatabase(); // ✅ вызов функции уже после её определения
 
 /* -----------------------------------------------------
    Переменные для отслеживания Teams-сообщений и ошибок
@@ -691,8 +692,6 @@ cron.schedule('1 0 * * *', async () => {
   console.log('[becloud] Запуск плановой проверки новостей (cron 00:01)');
   await checkBecloudPlannedDates();
 });
-
-
 
 
 
