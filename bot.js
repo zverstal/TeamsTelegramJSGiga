@@ -497,13 +497,23 @@ async function fetchBecloudNewsContent(url) {
       timeout: 10_000,
     });
     const $ = cheerio.load(data);
+
     // Предполагаем, что основной текст в .cnt
-    return $('.cnt').text().trim();
+    const content = $('.cnt').text().trim();
+
+    // Добавляем логирование для отладки
+    console.log('=== DEBUG (becloud) content START ===');
+    console.log(`URL: ${url}`);
+    console.log(content);
+    console.log('=== DEBUG (becloud) content END ===');
+
+    return content;
   } catch (err) {
     console.error('Ошибка при загрузке becloud-новости:', err.message);
     return '';
   }
 }
+
 
 /* ----------------------------------------------------------------
    3) Основная функция processBecloudNews
