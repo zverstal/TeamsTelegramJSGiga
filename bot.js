@@ -1021,10 +1021,10 @@ cron.schedule('0 3 * * *', () => {
   });
 });
 
-// Проверяем becloud раз в 5 минут (пример)
-cron.schedule('* * * * *', () => processBecloudNews());
-// Проверяем ERIP раз в 5 минут
-cron.schedule('* * * * *', () => processEripNews());
+// Проверяем becloud раз в 30 минут (пример)
+cron.schedule('*/30 * * * *', () => processBecloudNews());
+// Проверяем ERIP раз в 30 минут
+cron.schedule('*/30 * * * *', () => processEripNews());
 
 // Каждую минуту проверяем "за 5 часов" (можно раз в 5 минут)
 cron.schedule('* * * * *', () => checkBecloudPlannedTimes());
