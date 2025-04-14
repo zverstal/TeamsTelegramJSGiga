@@ -970,9 +970,9 @@ cron.schedule('0 3 * * *', () => {
 });
 
 // Проверяем becloud раз в 30 минут (пример)
-cron.schedule('*/30 * * * *', () => processBecloudNews());
+cron.schedule('*/5 * * * *', () => processBecloudNews());
 // Проверяем ERIP раз в 30 минут
-cron.schedule('*/30 * * * *', () => processEripNews());
+cron.schedule('*/5 * * * *', () => processEripNews());
 // В полночь публикуем
 cron.schedule('1 0 * * *', () => checkBecloudPlannedDates());
 
