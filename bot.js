@@ -492,20 +492,31 @@ async function fetchBecloudNewsContent(url) {
   }
 }
 
-/**
- * processBecloudNews:
- * - Скачиваем список
- * - Фильтруем заголовки
- * - Загружаем текст => находим planned_time
- * - Сохраняем в БД (posted=0)
- * - Не отправляем!
- */
+// Регулярка для извлечения времени: "c 12:00 до 18:00 14.04.2025"
+const rePlannedTime = /c\s+(\d{2}:\d{2})\s+до\s+(\d{2}:\d{2})\s+(\d{2}\.\d{2}\.\d{4})/i;
+
 async function processBecloudNews() {
-  const list = await fetchBecloudNewsList();
+  const list = await fetchBecloudNewsList(); // Парсит заголовки
   if (!list || !list.length) return;
 
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const maxDate = new Date(today);
+  maxDate.setDate(maxDate.getDate() + 3);
+
   for (const item of list) {
-    // Проверяем, нет ли уже
+    // Извлекаем дату из заголовка: "дд.мм.гггг"
+    const parsedHeadlineDate = parseDateDDMMYYYY(item.date);
+    if (!parsedHeadlineDate) continue;
+
+    // Проверка: [today; today+3]
+    const dateOnly = new Date(parsedHeadlineDate.getFullYear(), parsedHeadlineDate.getMonth(), parsedHeadlineDate.getDate());
+    if (dateOnly < today || dateOnly > maxDate) {
+      console.log(`[becloud] Дата ${item.date} не в диапазоне. Пропускаем.`);
+      continue;
+    }
+
+    // Проверяем дубликаты
     const exists = await new Promise((resolve) => {
       db.get(
         `SELECT id FROM news WHERE source = ? AND news_id = ?`,
@@ -521,53 +532,54 @@ async function processBecloudNews() {
     });
     if (exists) continue;
 
-    // Контент
-    const content = await fetchBecloudNewsContent(item.url);
-
-    // Ищем planned_time
+    // Загружаем полный текст, ищем точное время
+    const content = await fetchBecloudNewsContent(item.url); // функция, возвращающая HTML-текст
     let plannedTimeISO = null;
+
     const m = content.match(rePlannedTime);
     if (m) {
-      // m[1] = "02:00", m[2]="16.04.2025"
-      const startTimeStr = m[1]; // "02:00"
-      const dateStr = m[2];      // "16.04.2025"
+      // m[1] = "12:00", m[2] = "18:00", m[3] = "14.04.2025"
+      const startTimeStr = m[1];     // "12:00"
+      const dateStr = m[3];         // "14.04.2025"
       const d = parseDateDDMMYYYY(dateStr);
       if (d) {
         const [hh, mm] = startTimeStr.split(':').map(Number);
         d.setHours(hh, mm, 0, 0);
         plannedTimeISO = d.toISOString();
       }
+    } else {
+      console.log(`[becloud] Не нашли во внутреннем тексте «c 12:00 до ... dd.mm.yyyy». Пропускаем.`);
+      continue;
     }
 
-    // AI summary
+    // Сохраняем (posted=0)
     const summary = await summarizeNewsContent(item.source, content);
-
     const createdAt = new Date().toISOString();
+
     await new Promise((resolve) => {
-      db.run(
-        `INSERT INTO news 
-         (source, news_id, title, date, url, content, summary, created_at, planned_time, posted)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          item.source,
-          item.news_id,
-          item.title,
-          item.date,
-          item.url,
-          content,
-          summary,
-          createdAt,
-          plannedTimeISO, // может быть null
-          0,
-        ],
-        function (err) {
-          if (err) console.error('DB insert news error:', err);
-          resolve();
-        }
-      );
+      db.run(`
+        INSERT INTO news
+        (source, news_id, title, date, url, content, summary, created_at, planned_time, posted)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      `,
+      [
+        item.source,
+        item.news_id,
+        item.title,
+        item.date,
+        item.url,
+        content,
+        summary,
+        createdAt,
+        plannedTimeISO
+      ],
+      function (err) {
+        if (err) console.error('DB insert news error:', err);
+        resolve();
+      });
     });
 
-    console.log(`[becloud] Сохранили новость: ${item.title}, planned_time=${plannedTimeISO}`);
+    console.log(`[becloud] Сохранили: ${item.title}, planned_time=${plannedTimeISO}`);
   }
 }
 
