@@ -660,7 +660,7 @@ cron.schedule('0 3 * * *', () => {
     }
   );
 });
-cron.schedule('*/30 * * * *', () => processBecloudNews());
+cron.schedule('* * * * *', () => processBecloudNews());
 
 /* -------------------------------------
    10) Прочие команды/старт бота
