@@ -905,3 +905,17 @@ function parseDateDDMMYYYY(str) {
   const [dd, mm, yyyy] = parts;
   return new Date(yyyy, mm - 1, dd);
 }
+
+function parseDateDDMonthYYYY(str) {
+  const monthMap = {
+    'янв': 0, 'фев': 1, 'мар': 2, 'апр': 3, 'мая': 4, 'июн': 5,
+    'июл': 6, 'авг': 7, 'сен': 8, 'окт': 9, 'ноя': 10, 'дек': 11,
+  };
+  const parts = str.toLowerCase().split(' ');
+  if (parts.length < 3) return null;
+  const day = parseInt(parts[0], 10);
+  const month = monthMap[parts[1]];
+  const year = parseInt(parts[2], 10);
+  if (isNaN(day) || isNaN(year) || month === undefined) return null;
+  return new Date(year, month, day);
+}
