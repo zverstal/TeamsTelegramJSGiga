@@ -40,9 +40,9 @@ function initDatabase() {
     `);
 
     // Универсальная таблица для любых новостей
-    // Добавляем 2 новых поля:
-    //   planned_time TEXT - здесь храним дату/время начала работ (ISO-строка).
-    //   posted INTEGER - 0/1, отправляли ли уже "уведомление" за 5 часов.
+    // Добавим поля:
+    //   planned_time TEXT — для даты/времени начала работ (ISO)
+    //   posted INTEGER (0/1) — отправляли ли уведомление
     db.run(`
       CREATE TABLE IF NOT EXISTS news (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,12 +59,6 @@ function initDatabase() {
         UNIQUE(source, news_id)
       )
     `);
-
-    // Если нужно "ALTER TABLE", чтобы добавить поля в уже существующую
-    // можно сделать так (но SQLite не любит ALTER COLUMN). Пример:
-    // db.run(`ALTER TABLE news ADD COLUMN planned_time TEXT`);
-    // db.run(`ALTER TABLE news ADD COLUMN posted INTEGER DEFAULT 0`);
-    // Следите, чтобы не дублировать, если поля уже есть.
   });
 }
 initDatabase();
@@ -118,7 +112,9 @@ async function saveProcessedErrorSubjects() {
 // Сброс обработанных тем
 async function resetProcessedErrorSubjects() {
   processedErrorSubjects.clear();
-  if (fs.existsSync(processedSubjectsFile)) fs.unlinkSync(processedSubjectsFile);
+  if (fs.existsSync(processedSubjectsFile)) {
+    fs.unlinkSync(processedSubjectsFile);
+  }
 }
 
 // Получаем токен Microsoft (для Teams)
@@ -135,7 +131,7 @@ async function getMicrosoftToken() {
 }
 
 /* ----------------------------------------
-   Логика для получения Teams-сообщений
+   1) Логика для получения Teams-сообщений
 -----------------------------------------*/
 function extractTextContent(message) {
   const raw = message.body?.content || '';
@@ -160,7 +156,7 @@ function extractTextContent(message) {
     }
   });
 
-  // Условный критерий "ошибочного" сообщения
+  // Условный критерий определения "ошибочного" сообщения
   const isError = (
     sender.toLowerCase() === 'noreply@winline.kz'
     && /(ошибка|оповещение|ошибки|ошибочка|error|fail|exception|critical)/i.test(subject + ' ' + body)
@@ -201,7 +197,7 @@ function getErrorTypeAndIdentifier(msg) {
   return { type: 'Другое', id: 'N/A' };
 }
 
-// Получаем список сообщений из Teams
+// Получаем список сообщений Teams
 async function fetchTeamsMessages(token, teamId, channelId) {
   try {
     const url = `https://graph.microsoft.com/v1.0/teams/${teamId}/channels/${channelId}/messages`;
@@ -216,8 +212,8 @@ async function fetchTeamsMessages(token, teamId, channelId) {
 }
 
 /* ------------------------------------------------
-   Промт для нейросети для "обычных" сообщений
-   (ОСТАВЛЯЕМ КАК ЕСТЬ — «не ломать»)
+   2) Промт для нейросети для "обычных" сообщений
+      (ОСТАВЛЯЕМ КАК ЕСТЬ — «не ломать»)
 -------------------------------------------------*/
 async function summarizeMessages(messages, lastMsgId) {
   if (!messages.length) return null;
@@ -229,6 +225,7 @@ async function summarizeMessages(messages, lastMsgId) {
     return `ID: ${msg.id}\nОтправитель: ${msg.sender}\nТема: ${msg.subject}${reply}\nТекст сообщения: ${msg.body}`;
   }).join('\n\n');
 
+  // Старый промт, оставляем без изменений
   const prompt = `
 (Последний обработанный ID: ${lastMsgId})
 
@@ -246,6 +243,7 @@ async function summarizeMessages(messages, lastMsgId) {
 ${list}
 `.trim();
 
+  // Пример запроса в OpenAI (модель и параметры меняйте под себя)
   try {
     const response = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: 'gpt-4o-mini',
@@ -267,7 +265,8 @@ ${list}
 }
 
 /* -------------------------------------------
-   Промт для нейросети для "новостей" (универсальный)
+   3) Промт для нейросети для "новостей"
+      (УНИВЕРСАЛЬНЫЙ для разных источников)
 --------------------------------------------*/
 async function summarizeNewsContent(source, rawText) {
   const prompt = `
@@ -300,8 +299,8 @@ ${rawText}
 }
 
 /* ----------------------------------------------------------------
-   Логика для обработки повторяющихся ошибок (Teams)
-   и отправки раз в час сводки
+   4) Логика для обработки повторяющихся ошибок (Teams) и отправки
+      раз в час сводки
 -----------------------------------------------------------------*/
 async function sendErrorSummaryIfNeeded() {
   if (collectedErrors.length === 0) return;
@@ -331,7 +330,7 @@ async function sendErrorSummaryIfNeeded() {
     subject: e.subject,
     date: e.createdDateTime,
   }));
-  collectedErrors.length = 0;
+  collectedErrors.length = 0; // очистим
 
   const msg = await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, summary, {
     parse_mode: 'Markdown',
@@ -367,23 +366,27 @@ async function processTeamsMessages() {
   const messages = await fetchTeamsMessages(token, process.env.TEAM_ID, process.env.CHANNEL_ID);
   if (!messages || !messages.length) return;
 
-  // Берём только те, что идут после последнего
+  // Берём только те, что идут после последнего обработанного
   const newMessages = messages.filter(
     (m) => !lastProcessedMessageId || m.id > lastProcessedMessageId
   );
   if (newMessages.length === 0) return;
 
+  // Обновляем последний обработанный
   lastProcessedMessageId = newMessages[newMessages.length - 1].id;
   await saveLastProcessedMessageId(lastProcessedMessageId);
 
+  // Разделяем на ошибки и обычные
   const errors = newMessages.filter((m) => m.isError);
   const normal = newMessages.filter((m) => !m.isError);
 
+  // Обрабатываем ошибки
   for (const msg of errors) {
     const { type, id } = getErrorTypeAndIdentifier(msg);
     msg.type = type;
     msg.extractedId = id;
 
+    // Если тема ещё не встречалась, отправим уведомление
     if (!processedErrorSubjects.has(msg.subject)) {
       await bot.api.sendMessage(
         process.env.TELEGRAM_CHAT_ID,
@@ -393,10 +396,12 @@ async function processTeamsMessages() {
       processedErrorSubjects.add(msg.subject);
       await saveProcessedErrorSubjects();
     } else {
+      // Иначе складируем, чтобы потом отправить сводку
       collectedErrors.push(msg);
     }
   }
 
+  // Суммаризируем обычные сообщения, если есть
   if (normal.length > 0) {
     const summary = await summarizeMessages(normal, lastProcessedMessageId);
     if (summary) {
@@ -410,17 +415,14 @@ async function processTeamsMessages() {
 }
 
 /* ----------------------------------------------------------------
-   Парсинг becloud с логикой: "сохраняем, но отправляем за 5 часов"
+   5) Парсинг becloud — заголовки + время начала, 
+      но отправка за 5 часов до planned_time
 -----------------------------------------------------------------*/
 
-/**
- * Пример RegExp для заголовка:
- * /^(Уведомление о проведении плановых|Ухудшение качества услуги).*(\d{2}\.\d{2}\.\d{4})$/i
- * Если нужно «Интернет» и т. д. – подставьте нужные варианты.
- */
-const reWantedBecloud = /^(Уведомление о проведении плановых|Ухудшение качества услуги).*(\d{2}\.\d{2}\.\d{4})$/i;
+// Пример RegExp для заголовков
+const reWantedBecloud = /^(Уведомление о проведении плановых|Ухудшение качества услуги ?«?Интернет»?).*(\d{2}\.\d{2}\.\d{4})$/i;
 
-// Парсим dd.mm.yyyy
+// Парсим "дд.мм.гггг"
 function parseDateDDMMYYYY(str) {
   const [day, month, year] = str.split('.');
   if (!day || !month || !year) return null;
@@ -428,16 +430,7 @@ function parseDateDDMMYYYY(str) {
   return isNaN(d.getTime()) ? null : d;
 }
 
-/**
- * Ищем в тексте контента фразу вида:
- * "будут проводиться с 02:00 до 06:00 16.04.2025" 
- * и пытаемся извлечь начало: "16.04.2025 02:00"
- *
- * Упрощённый пример RegExp:
- * /с\s*(\d{2}:\d{2})\s*до\s*\d{2}:\d{2}\s+(\d{2}\.\d{2}\.\d{4})/i
- * Группа (1) = "02:00"
- * Группа (2) = "16.04.2025"
- */
+// Ищем в тексте "с 02:00 до 06:00 16.04.2025"
 const rePlannedTime = /с\s*(\d{2}:\d{2})\s*до\s*\d{2}:\d{2}\s+(\d{2}\.\d{2}\.\d{4})/i;
 
 async function fetchBecloudNewsList() {
@@ -459,19 +452,17 @@ async function fetchBecloudNewsList() {
       const href = $titleTag.attr('href');
       if (!fullTitle || !href) return;
 
-      // Фильтруем заголовки
+      // Проверяем заголовки
       const match = fullTitle.match(reWantedBecloud);
       if (!match) return;
 
-      // match[2] = "дд.мм.гггг"
-      const extractedDate = match[2]; 
+      const extractedDate = match[2]; // "16.04.2025"
       const url = href.startsWith('http') ? href : (baseURL + href);
 
       newsItems.push({
         source: 'becloud',
         news_id: href,
         title: fullTitle,
-        // Сохраняем date (из заголовка) просто как справочную
         date: extractedDate,
         url,
       });
@@ -492,6 +483,7 @@ async function fetchBecloudNewsContent(url) {
     });
     const $ = cheerio.load(data);
 
+    // Предположим, основной контент в .cnt
     const content = $('.cnt').text().trim();
     return content;
   } catch (err) {
@@ -502,18 +494,18 @@ async function fetchBecloudNewsContent(url) {
 
 /**
  * processBecloudNews:
- * 1. Скачиваем список
- * 2. Парсим контент
- * 3. Ищем planned_time (дата и время начала), если нет – можно брать 00:00
- * 4. Сохраняем planned_time в БД, posted=0
- * 5. Не отправляем сразу! 
+ * - Скачиваем список
+ * - Фильтруем заголовки
+ * - Загружаем текст => находим planned_time
+ * - Сохраняем в БД (posted=0)
+ * - Не отправляем!
  */
 async function processBecloudNews() {
   const list = await fetchBecloudNewsList();
   if (!list || !list.length) return;
 
   for (const item of list) {
-    // Проверяем в БД
+    // Проверяем, нет ли уже
     const exists = await new Promise((resolve) => {
       db.get(
         `SELECT id FROM news WHERE source = ? AND news_id = ?`,
@@ -527,38 +519,30 @@ async function processBecloudNews() {
         }
       );
     });
-    if (exists) {
-      // уже есть, пропустим
-      continue;
-    }
+    if (exists) continue;
 
-    // Загружаем полный текст
+    // Контент
     const content = await fetchBecloudNewsContent(item.url);
 
-    // Ищем в тексте "с 02:00 до 06:00 16.04.2025"
-    let plannedDateTimeISO = null;
-    const match = content.match(rePlannedTime);
-    if (match) {
-      // match[1] = "02:00" (startTime)
-      // match[2] = "16.04.2025" (date)
-      const startTimeStr = match[1];        // "02:00"
-      const dateStr = match[2];            // "16.04.2025"
-      const parsedDate = parseDateDDMMYYYY(dateStr);
-      if (parsedDate) {
-        // Сконструируем дату-время
-        const [hh, mm] = startTimeStr.split(':').map(x => +x);
-        parsedDate.setHours(hh, mm, 0, 0);
-        // Переводим в ISO
-        plannedDateTimeISO = parsedDate.toISOString();
+    // Ищем planned_time
+    let plannedTimeISO = null;
+    const m = content.match(rePlannedTime);
+    if (m) {
+      // m[1] = "02:00", m[2]="16.04.2025"
+      const startTimeStr = m[1]; // "02:00"
+      const dateStr = m[2];      // "16.04.2025"
+      const d = parseDateDDMMYYYY(dateStr);
+      if (d) {
+        const [hh, mm] = startTimeStr.split(':').map(Number);
+        d.setHours(hh, mm, 0, 0);
+        plannedTimeISO = d.toISOString();
       }
     }
 
-    // Если не нашли, по умолчанию будем считать 00:00 (или можно null)
-    // summary
+    // AI summary
     const summary = await summarizeNewsContent(item.source, content);
-    const createdAt = new Date().toISOString();
 
-    // Вставляем (posted=0)
+    const createdAt = new Date().toISOString();
     await new Promise((resolve) => {
       db.run(
         `INSERT INTO news 
@@ -573,8 +557,8 @@ async function processBecloudNews() {
           content,
           summary,
           createdAt,
-          plannedDateTimeISO, // может быть null
-          0,                  // не отправляли уведомление
+          plannedTimeISO, // может быть null
+          0,
         ],
         function (err) {
           if (err) console.error('DB insert news error:', err);
@@ -583,66 +567,50 @@ async function processBecloudNews() {
       );
     });
 
-    console.log(`[becloud] Сохранили новость: ${item.title}. planned_time=${plannedDateTimeISO}`);
+    console.log(`[becloud] Сохранили новость: ${item.title}, planned_time=${plannedTimeISO}`);
   }
 }
 
 /**
- * Новый cron: Каждую минуту смотрим:
- * 1. Если becloud-новость (source='becloud'), posted=0
- * 2. planned_time != null
- * 3. Если planned_time - 5 часов <= now < planned_time
- *    => Отправляем эту новость как уведомление, posted=1
- *
- * Если planned_time уже в прошлом, можно тоже обработать (или пропустить).
+ * checkBecloudPlannedTimes():
+ * - Выбираем все becloud-новости, где posted=0 и planned_time != null
+ * - Если до начала осталось <= 5 часов (и > 0), отправляем
  */
 async function checkBecloudPlannedTimes() {
-  const now = new Date();
-  const nowMs = now.getTime();
+  const nowMs = Date.now();
 
-  // Выбираем все becloud-новости, где posted=0 и planned_time not null
-  db.all(
-    `SELECT * FROM news 
-     WHERE source='becloud' 
-       AND posted=0 
-       AND planned_time IS NOT NULL`,
-    async (err, rows) => {
-      if (err) {
-        console.error('DB select becloud posted=0 error:', err);
-        return;
+  db.all(`
+    SELECT * FROM news
+    WHERE source='becloud'
+      AND posted=0
+      AND planned_time IS NOT NULL
+  `, async (err, rows) => {
+    if (err) {
+      console.error('[becloud] DB select posted=0 error:', err);
+      return;
+    }
+    if (!rows || rows.length === 0) {
+      return;
+    }
+
+    for (const row of rows) {
+      const plan = new Date(row.planned_time);
+      if (isNaN(plan.getTime())) {
+        continue;
       }
-      if (!rows || rows.length === 0) {
-        return;
-      }
-
-      for (const row of rows) {
-        const plan = new Date(row.planned_time);
-        if (isNaN(plan.getTime())) {
-          continue;
-        }
-
-        // Разница в мс
-        const diffMs = plan.getTime() - nowMs; 
-        // если 0 < diffMs <= 5 часов => пора отправить
-        // (т. е. plan - 5ч <= now < plan)
-        // На практике: diffMs <= 5*60*60*1000 && diffMs>0
-        if (diffMs > 0 && diffMs <= (5 * 60 * 60 * 1000)) {
-          // Отправляем
-          await sendBecloudPreNotification(row);
-          // posted=1
-          db.run(`UPDATE news SET posted=1 WHERE id=?`, [row.id]);
-        } else {
-          // либо еще не пора, либо уже поздно
-        }
+      const diffMs = plan.getTime() - nowMs;
+      // Если 0 < diffMs <= 5h => отправляем
+      if (diffMs > 0 && diffMs <= 5 * 60 * 60 * 1000) {
+        // Отправить сообщение
+        await sendBecloudPreNotification(row);
+        // posted=1
+        db.run(`UPDATE news SET posted=1 WHERE id=?`, [row.id]);
       }
     }
-  );
+  });
 }
 
-/**
- * Функция отправляет сообщение "Новость за 5 часов до начала"
- * Можете кастомизировать текст как угодно.
- */
+// Отправка «за 5 часов» уведомления
 async function sendBecloudPreNotification(row) {
   const shortText = row.summary || (row.content.slice(0, 500) + '...');
   const msgText =
@@ -656,136 +624,20 @@ async function sendBecloudPreNotification(row) {
     parse_mode: 'Markdown',
     disable_web_page_preview: false,
   });
-  console.log(`[becloud] За 5 часов отправили уведомление по новости id=${row.id}`);
+  console.log(`[becloud] (id=${row.id}) Отправлено «за 5 часов» до плановых работ.`);
 }
 
 /* ----------------------------------------------------------------
-   (Прочий парсинг ERIP, если он вам нужен, пропускаем/оставляем)
------------------------------------------------------------------*/
-// ... Здесь может быть processEripNews, fetchEripNewsList и т.п.
-
-/* --------------------------------------------------
-   Команда /news для вывода последних N новостей
-----------------------------------------------------*/
-bot.command('news', async (ctx) => {
-  console.log('[/news] Команда /news была вызвана.');
-  const messageText = ctx.message?.text || '';
-  const parts = messageText.split(' ');
-  const limit = parseInt(parts[1], 10) || 3;
-
-  db.all(
-    `SELECT * FROM news ORDER BY id DESC LIMIT ?`,
-    [limit],
-    (err, rows) => {
-      if (err) {
-        console.error('DB select news error:', err);
-        return ctx.reply('Произошла ошибка при чтении новостей.');
-      }
-      if (!rows || rows.length === 0) {
-        return ctx.reply('Пока нет сохранённых новостей.');
-      }
-
-      let response = `📰 *Последние ${rows.length} новостей (из разных источников)*:\n\n`;
-      rows.forEach((row) => {
-        response += `*Источник:* ${row.source}\n`;
-        response += `*Заголовок:* ${row.title}\n`;
-        if (row.date) {
-          response += `Дата: ${row.date}\n`;
-        }
-        if (row.summary) {
-          response += `_${row.summary}_\n`;
-        }
-        if (row.planned_time) {
-          response += `Запланировано: ${row.planned_time}\n`;
-          response += `Уведомление отправлено? ${row.posted ? 'Да' : 'Нет'}\n`;
-        }
-        response += `[Подробнее](${row.url})\n\n`;
-      });
-      ctx.reply(response, { parse_mode: 'Markdown', disable_web_page_preview: false });
-    }
-  );
-});
-
-/* ----------------------------------------------------------
-   Коллбэки для "Подробнее"/"Скрыть" сводок ошибок Teams
------------------------------------------------------------*/
-bot.on('callback_query:data', async (ctx) => {
-  const data = ctx.callbackQuery.data;
-  const match = data.match(/^(show_details|hide_details)_(\d+)$/);
-  if (!match) {
-    return ctx.answerCallbackQuery({ text: 'Неверный формат.', show_alert: true });
-  }
-
-  const [_, action, id] = match;
-  db.get('SELECT * FROM error_summaries WHERE id = ?', [id], async (err, row) => {
-    if (err || !row) {
-      return ctx.answerCallbackQuery({ text: 'Сводка не найдена.', show_alert: true });
-    }
-
-    if (action === 'show_details') {
-      const grouped = JSON.parse(row.details_json).reduce((acc, item) => {
-        acc[item.type] = acc[item.type] || [];
-        acc[item.type].push(item.id);
-        return acc;
-      }, {});
-
-      let text = '📋 *Детали ошибок по типам:*\n\n';
-      for (const [type, ids] of Object.entries(grouped)) {
-        const unique = [...new Set(ids)].sort();
-        text += `*${type}* (${unique.length}):\n\`${unique.join(', ')}\`\n\n`;
-      }
-      await ctx.answerCallbackQuery();
-      await bot.api.editMessageText(row.chat_id, row.message_id, text, {
-        parse_mode: 'Markdown',
-        reply_markup: new InlineKeyboard().text('🔼 Скрыть', `hide_details_${id}`),
-      });
-    } else {
-      await ctx.answerCallbackQuery();
-      await bot.api.editMessageText(row.chat_id, row.message_id, row.summary_text, {
-        parse_mode: 'Markdown',
-        reply_markup: new InlineKeyboard().text('📋 Подробнее', `show_details_${id}`),
-      });
-    }
-  });
-});
-
-/* -------------------------------------------------
-   Починка "Подробнее" кнопок (для старых сводок)
---------------------------------------------------*/
-async function repairMissingButtons() {
-  db.all('SELECT id, chat_id, message_id FROM error_summaries', async (err, rows) => {
-    if (err) return console.error('Ошибка при чтении сводок из БД:', err);
-    for (const row of rows) {
-      try {
-        await bot.api.editMessageReplyMarkup(row.chat_id, row.message_id, {
-          reply_markup: new InlineKeyboard().text('📋 Подробнее', `show_details_${row.id}`),
-        });
-        console.log(`🔧 Кнопка добавлена к message_id=${row.message_id}`);
-      } catch (e) {
-        console.warn(`⛔ Не удалось обновить message_id=${row.message_id}:`, e.description);
-      }
-    }
-  });
-}
-bot.command('fixbuttons', async (ctx) => {
-  console.log('[/fixbuttons] Команда fixbuttons получена.');
-  await ctx.reply('🔧 Начинаю восстановление кнопок...');
-  await repairMissingButtons();
-  await ctx.reply('✅ Попробовал обновить все сводки.');
-});
-
-/* ----------------------------------------------------------------
-   6) Парсинг ERIP (raschet.by) с проверкой даты +3 дня
+   6) Парсинг ERIP (raschet.by) — только [сегодня; +3 дня]
 -----------------------------------------------------------------*/
 
-// Аналогично, как в предыдущем примере
+// Преобразуем "27 фев 2025" -> Date(2025, 1, 27)
 function parseDateDDMonthYYYY(str) {
   const monthMap = {
     'янв': 0, 'фев': 1, 'мар': 2, 'апр': 3, 'мая': 4, 'июн': 5,
     'июл': 6, 'авг': 7, 'сен': 8, 'окт': 9, 'ноя': 10, 'дек': 11,
   };
   const parts = str.toLowerCase().split(' ');
-  // parts: ["4", "апр", "2025"] или "27", "фев", "2025"
   if (parts.length < 3) return null;
   const day = parseInt(parts[0], 10);
   const mmName = parts[1];
@@ -811,13 +663,13 @@ async function fetchEripNewsList() {
     });
     const $ = cheerio.load(data);
 
-    // Ищем <a class="news-item" ...>
+    // Ищем a.news-item
     $('a.news-item').each((_, el) => {
       const $a = $(el);
       const href = $a.attr('href');
       if (!href) return;
 
-      const dateStr = $a.find('.date').text().trim(); // напр. "4 апр 2025"
+      const dateStr = $a.find('.date').text().trim();
       const title = $a.find('.news-title').text().trim();
       if (!dateStr || !title) return;
 
@@ -827,7 +679,7 @@ async function fetchEripNewsList() {
         source: 'erip',
         news_id: url,
         title,
-        date: dateStr, // "4 апр 2025"
+        date: dateStr, // "27 фев 2025"
         url,
       });
     });
@@ -847,10 +699,8 @@ async function fetchEripNewsContent(url) {
     });
     const $ = cheerio.load(data);
 
-    // Ищем блок news-detail или item-content
     const $detail = $('.news-detail, .item-content');
     if (!$detail.length) {
-      // fallback
       return $('body').text().trim();
     }
 
@@ -863,7 +713,7 @@ async function fetchEripNewsContent(url) {
     }
     return text;
   } catch (err) {
-    console.error('Ошибка при загрузке новости ERIP:', err.message);
+    console.error('Ошибка при загрузке ERIP-новости:', err.message);
     return '';
   }
 }
@@ -883,8 +733,8 @@ async function processEripNews() {
       console.log(`[ERIP] Дата нераспознана: '${item.date}'. Пропускаем.`);
       continue;
     }
-
     const dd = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
     if (dd < today) {
       console.log(`[ERIP] Новость за ${item.date} уже прошла. Пропускаем.`);
       continue;
@@ -894,6 +744,7 @@ async function processEripNews() {
       continue;
     }
 
+    // Проверка дубликата
     const exists = await new Promise((resolve) => {
       db.get(
         `SELECT id FROM news WHERE source = ? AND news_id = ?`,
@@ -917,29 +768,31 @@ async function processEripNews() {
 
     const createdAt = new Date().toISOString();
     await new Promise((resolve) => {
-      db.run(
-        `INSERT INTO news (source, news_id, title, date, url, content, summary, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          item.source,
-          item.news_id,
-          item.title,
-          item.date,
-          item.url,
-          content,
-          summary,
-          createdAt,
-        ],
-        function (err) {
-          if (err) console.error('DB insert news error:', err);
-          resolve();
-        }
-      );
+      db.run(`
+        INSERT INTO news 
+        (source, news_id, title, date, url, content, summary, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        item.source,
+        item.news_id,
+        item.title,
+        item.date,
+        item.url,
+        content,
+        summary,
+        createdAt,
+      ],
+      function (err) {
+        if (err) console.error('DB insert news error:', err);
+        resolve();
+      });
     });
 
+    // Сразу отправляем
     const shortText = summary || (content.slice(0, 500) + '...');
     const msgText =
-      `📰 *Новая новость (${item.source})*\n` +
+      `📰 *Новая новость (ERIP)*\n` +
       `*Заголовок:* ${item.title}\n` +
       (item.date ? `*Дата:* ${item.date}\n` : '') +
       (summary ? `*Краткое содержание:* ${summary}\n` : `*Фрагмент:* ${shortText}\n`) +
@@ -987,6 +840,10 @@ bot.command('news', async (ctx) => {
         }
         if (row.summary) {
           response += `_${row.summary}_\n`;
+        }
+        if (row.planned_time) {
+          response += `Запланировано (начало): ${row.planned_time}\n`;
+          response += `Уведомление отправлено? ${row.posted ? 'Да' : 'Нет'}\n`;
         }
         response += `[Подробнее](${row.url})\n\n`;
       });
@@ -1068,26 +925,31 @@ bot.command('fixbuttons', async (ctx) => {
 /* ------------------------------
    10) Cron-задачи
 -------------------------------*/
+
+// Каждую минуту - Teams
 cron.schedule('* * * * *', () => processTeamsMessages());
+// Каждую минуту - отправить сводку ошибок, если накопились, но обычно раз в час
 cron.schedule('0 * * * *', () => sendErrorSummaryIfNeeded());
+// Сброс обработанных тем в 00:05
 cron.schedule('5 0 * * *', () => resetProcessedErrorSubjects());
+// Очистка сводок (старше 3 месяцев) в 03:00
 cron.schedule('0 3 * * *', () => {
-  db.run(
-    `DELETE FROM error_summaries
-     WHERE datetime(created_at) < datetime('now', '-3 months')`,
-    function (err) {
-      if (err) console.error('Очистка сводок:', err);
-      else console.log(`Удалено старых сводок: ${this.changes}`);
-    }
-  );
+  db.run(`
+    DELETE FROM error_summaries
+    WHERE datetime(created_at) < datetime('now', '-3 months')
+  `,
+  function (err) {
+    if (err) console.error('Очистка сводок:', err);
+    else console.log(`Удалено старых сводок: ${this.changes}`);
+  });
 });
 
-// Каждые 30 минут — проверяем becloud
+// Проверяем becloud раз в 5 минут (пример)
 cron.schedule('* * * * *', () => processBecloudNews());
-// Каждые 30 минут — проверяем ERIP
+// Проверяем ERIP раз в 5 минут
 cron.schedule('* * * * *', () => processEripNews());
 
-// Каждую минуту (или каждые 5 минут) — проверяем, не пора ли отправлять "за 5 часов"
+// Каждую минуту проверяем "за 5 часов" (можно раз в 5 минут)
 cron.schedule('* * * * *', () => checkBecloudPlannedTimes());
 
 /* -------------------------------------
