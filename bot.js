@@ -408,17 +408,31 @@ async function processTeamsMessages() {
   }
 }
 
-/* ----------------------------------------------------------------
-   5) Парсинг becloud — но ФИЛЬТРУЕМ по RegExp
------------------------------------------------------------------*/
 
-// Регулярка: два варианта заголовка, в конце дата дд.мм.гггг
+/////////////////////////////////////////////
+// 5) Парсинг becloud — но ФИЛЬТРУЕМ по RegExp 
+//    И проверяем дату (сегодня + 3 дня)
+/////////////////////////////////////////////
+
+// 1. Регулярка для заголовка:
+//    /^(Уведомление о проведении плановых|Ухудшение качества услуги ?«?Интернет»?).*(\d{2}\.\d{2}\.\d{4})$/i
+//    Группа (2) = "дд.мм.гггг"
 const reWantedBecloud = /^(Уведомление о проведении плановых|Ухудшение качества услуги ?«?Интернет»?).*(\d{2}\.\d{2}\.\d{4})$/i;
 
+// 2. Функция для парсинга "дд.мм.гггг" => объект Date
+function parseDateDDMMYYYY(str) {
+  // Ожидаем "14.04.2025" и т.п.
+  const [day, month, year] = str.split('.');
+  if (!day || !month || !year) return null;
+  const d = new Date(+year, +month - 1, +day);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// 3. Загружаем список новостей becloud, фильтруем по регулярке
 async function fetchBecloudNewsList() {
   const baseURL = 'https://becloud.by';
   const newsURL = `${baseURL}/customers/informing/`;
-  let newsItems = [];
+  const newsItems = [];
 
   try {
     const { data } = await axios.get(newsURL, {
@@ -427,38 +441,29 @@ async function fetchBecloudNewsList() {
     });
     const $ = cheerio.load(data);
 
-    // Ищем .news__item
     $('.news__item').each((_, el) => {
       const $item = $(el);
       const $titleTag = $item.find('h6 a');
-      const title = $titleTag.text().trim();
+      const title = $titleTag.text().trim(); // Полный заголовок
       const href = $titleTag.attr('href');
-      const dateBlock = $item.find('.news-date').text().trim();
-
       if (!title || !href) return;
 
-      // Фильтруем по regex reWantedBecloud
-      if (!reWantedBecloud.test(title)) {
-        // Если заголовок не подходит под паттерн — пропускаем
+      // Проверяем заголовок на соответствие нужному шаблону
+      const match = title.match(reWantedBecloud);
+      if (!match) {
+        // Не подходит под условие — пропускаем
         return;
       }
 
-      // news_id и url
-      const news_id = href;
+      // match[2] = "дд.мм.гггг"
+      const extractedDateStr = match[2];
       const url = href.startsWith('http') ? href : (baseURL + href);
-
-      // Извлечём дату из самого заголовка (в группе (2)), если нужно
-      const match = title.match(reWantedBecloud);
-      let extractedDate = (match && match[2]) ? match[2] : '';
-      // Но вы также имеете dateBlock (из .news-date).
-      // Решите, какую дату вам нужнее. Можно взять extractedDate.
 
       newsItems.push({
         source: 'becloud',
-        news_id,
-        title,
-        // date: dateBlock, // или extractedDate
-        date: extractedDate, // например, "14.04.2025"
+        news_id: href,       // или url, на ваше усмотрение
+        title,               // сам заголовок
+        date: extractedDateStr, // "14.04.2025" (к примеру)
         url,
       });
     });
@@ -470,7 +475,7 @@ async function fetchBecloudNewsList() {
   return newsItems;
 }
 
-// Получаем полный текст becloud
+// 4. Функция для загрузки полного контента
 async function fetchBecloudNewsContent(url) {
   try {
     const { data } = await axios.get(url, {
@@ -479,20 +484,48 @@ async function fetchBecloudNewsContent(url) {
     });
     const $ = cheerio.load(data);
 
-    // Основной текст в .cnt
+    // Основной текст предположительно в div.cnt
     const content = $('.cnt').text().trim();
     return content;
   } catch (err) {
-    console.error('Ошибка при загрузке новости becloud:', err.message);
+    console.error('Ошибка при загрузке becloud-новости:', err.message);
     return '';
   }
 }
 
+// 5. Основная функция: парсим becloud, проверяем дату "сегодня + 3 дня", сохраняем
 async function processBecloudNews() {
+  // 5.1 Берём список
   const list = await fetchBecloudNewsList();
   if (!list || !list.length) return;
 
+  // 5.2 Устанавливаем диапазон дат [today; today+3]
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const maxDate = new Date(today);
+  maxDate.setDate(maxDate.getDate() + 3);
+
+  // 5.3 Идём по всем отфильтрованным заголовкам
   for (const item of list) {
+    // Парсим extractedDateStr => Date
+    const d = parseDateDDMMYYYY(item.date); // например, "14.04.2025"
+    if (!d) {
+      console.log(`[becloud] Неверная дата '${item.date}'. Пропускаем.`);
+      continue;
+    }
+
+    // Сравниваем по "дню"
+    const dd = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    if (dd < today) {
+      console.log(`[becloud] Новость (дата=${item.date}) уже в прошлом. Пропускаем.`);
+      continue;
+    }
+    if (dd > maxDate) {
+      console.log(`[becloud] Новость (дата=${item.date}) > +3 дней. Пропускаем.`);
+      continue;
+    }
+
+    // 5.4 Проверяем, нет ли в БД
     const exists = await new Promise((resolve) => {
       db.get(
         `SELECT id FROM news WHERE source = ? AND news_id = ?`,
@@ -507,13 +540,15 @@ async function processBecloudNews() {
       );
     });
     if (exists) {
-      console.log(`[Becloud] Новость уже есть в БД. Пропускаем: ${item.news_id}`);
+      console.log(`[becloud] Новость уже есть в БД: '${item.news_id}'. Пропускаем.`);
       continue;
     }
 
+    // 5.5 Загружаем полный текст и делаем AI-суммаризацию
     const content = await fetchBecloudNewsContent(item.url);
     const summary = await summarizeNewsContent(item.source, content);
 
+    // 5.6 Сохраняем в таблицу news
     const createdAt = new Date().toISOString();
     await new Promise((resolve) => {
       db.run(
@@ -523,7 +558,7 @@ async function processBecloudNews() {
           item.source,
           item.news_id,
           item.title,
-          item.date,
+          item.date,     // строка "дд.мм.гггг"
           item.url,
           content,
           summary,
@@ -536,11 +571,12 @@ async function processBecloudNews() {
       );
     });
 
+    // 5.7 Отправляем сообщение в чат
     const shortText = summary || (content.slice(0, 500) + '...');
     const msgText =
-      `📰 *Новая новость (${item.source})*\n` +
+      `📰 *Новая новость (becloud)*\n` +
       `*Заголовок:* ${item.title}\n` +
-      (item.date ? `*Дата:* ${item.date}\n` : '') +
+      `*Дата:* ${item.date}\n` +
       (summary ? `*Краткое содержание:* ${summary}\n` : `*Фрагмент:* ${shortText}\n`) +
       `[Читать подробнее](${item.url})`;
 
@@ -550,6 +586,7 @@ async function processBecloudNews() {
     });
   }
 }
+
 
 /* ----------------------------------------------------------------
    6) Парсинг ERIP (raschet.by) с проверкой даты +3 дня
