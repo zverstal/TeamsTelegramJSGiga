@@ -27,7 +27,7 @@ function initDatabase() {
   db = new sqlite3.Database(path.join(__dirname, 'summaries.db'), (err) => {
     if (err) return console.error('SQLite error:', err);
 
-    // Таблица для хранения сводок об ошибках
+    // Таблица для сводок об ошибках
     db.run(`
       CREATE TABLE IF NOT EXISTS error_summaries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -412,11 +412,6 @@ async function processTeamsMessages() {
    5) Универсальный механизм сбора новостей с разных источников
       (пример: becloud, но можно добавить любые другие)
 -----------------------------------------------------------------*/
-
-/**
- * Пример функции, парсящей becloud.by. 
- * Можно аналогично писать функции для других сайтов.
- */
 async function fetchBecloudNewsList() {
   const baseURL = 'https://becloud.by';
   const newsURL = `${baseURL}/customers/informing/`;
@@ -425,7 +420,7 @@ async function fetchBecloudNewsList() {
   try {
     const { data } = await axios.get(newsURL, {
       httpsAgent: new https.Agent({ rejectUnauthorized: false }),
-      timeout: 10_000, // 10 секунд на запрос
+      timeout: 10_000,
     });
     const $ = cheerio.load(data);
 
@@ -436,15 +431,13 @@ async function fetchBecloudNewsList() {
       const href = $titleTag.attr('href');
       const date = $item.find('.news-date').text().trim();
 
-      if (!title || !href) return; // невалидные данные, пропустим
+      if (!title || !href) return;
 
-      // Сформируем уникальный ID (news_id). Можно брать из href
       const news_id = href;
-      // Сформируем полный url
       const url = href.startsWith('http') ? href : (baseURL + href);
 
       newsItems.push({
-        source: 'becloud', // будем хранить "becloud"
+        source: 'becloud',
         news_id,
         title,
         date,
@@ -453,14 +446,12 @@ async function fetchBecloudNewsList() {
     });
   } catch (err) {
     console.error('Ошибка при запросе becloud:', err.message);
-    // вернём пустой массив, чтобы не падала вся логика
     return [];
   }
 
   return newsItems;
 }
 
-// Подгружаем полный текст новости
 async function fetchBecloudNewsContent(url) {
   try {
     const { data } = await axios.get(url, {
@@ -478,16 +469,11 @@ async function fetchBecloudNewsContent(url) {
   }
 }
 
-/**
- * Универсальная функция, собирающая новости c becloud
- * (можно сделать аналогичную для других источников)
- */
 async function processBecloudNews() {
   const list = await fetchBecloudNewsList();
   if (!list || !list.length) return;
 
   for (const item of list) {
-    // Проверим, есть ли уже в БД новость с таким (source, news_id)
     const exists = await new Promise((resolve) => {
       db.get(
         `SELECT id FROM news WHERE source = ? AND news_id = ?`,
@@ -495,21 +481,17 @@ async function processBecloudNews() {
         (err, row) => {
           if (err) {
             console.error('DB check news error:', err);
-            return resolve(true); // чтобы избежать дублирования при ошибке
+            return resolve(true);
           }
           resolve(!!row);
         }
       );
     });
-    if (exists) continue; // уже есть в БД, пропустим
+    if (exists) continue;
 
-    // Загружаем полный текст
     const content = await fetchBecloudNewsContent(item.url);
-
-    // Вызываем универсальную нейросеть, чтобы кратко суммировать
     const summary = await summarizeNewsContent(item.source, content);
 
-    // Сохраняем новость в БД
     const createdAt = new Date().toISOString();
     await new Promise((resolve) => {
       db.run(
@@ -532,7 +514,6 @@ async function processBecloudNews() {
       );
     });
 
-    // Отправляем сообщение в Telegram
     const shortText = summary || (content.slice(0, 500) + '...');
     const msgText =
       `📰 *Новая новость (${item.source})*\n` +
@@ -549,19 +530,22 @@ async function processBecloudNews() {
 }
 
 /* --------------------------------------------------
-   6) Команда /news для вывода последних N новостей
+   6) Команда /news — делаем как /start, без лишних if
 ----------------------------------------------------*/
 bot.command('news', async (ctx) => {
-  // Проверяем, есть ли ctx.message и текст команды
-  if (!ctx.message || !ctx.message.text) {
-    // Если команда пришла из канала или как-то иначе без текста — игнорируем или ругаемся
-    return;
-  }
+  console.log('[/news] Команда /news была вызвана.');
 
-  // например, /news 5 — показать 5 последних
-  const parts = ctx.message.text.split(' ');
-  const limit = parseInt(parts[1], 10) || 3; // по умолчанию 3
+  // Просто читаем текст, если его нет, будет пустая строка.
+  const messageText = ctx.message?.text || '';
+  console.log(`[/news] Текст сообщения: "${messageText}"`);
 
+  // Логика парсинга лимита
+  const parts = messageText.split(' ');
+  const limit = parseInt(parts[1], 10) || 3;
+  console.log(`[/news] Будем показывать последние ${limit} новостей.`);
+
+  // Достаем новости из БД
+  console.log('[/news] Запрашиваем новости из БД...');
   db.all(
     `SELECT * FROM news ORDER BY id DESC LIMIT ?`,
     [limit],
@@ -571,9 +555,11 @@ bot.command('news', async (ctx) => {
         return ctx.reply('Произошла ошибка при чтении новостей.');
       }
       if (!rows || rows.length === 0) {
+        console.log('[/news] В БД нет новостей для показа.');
         return ctx.reply('Пока нет сохранённых новостей.');
       }
 
+      console.log(`[/news] Получили ${rows.length} новостей, формируем ответ...`);
       let response = `📰 *Последние ${rows.length} новостей (из разных источников)*:\n\n`;
       rows.forEach((row) => {
         response += `*Источник:* ${row.source}\n`;
@@ -583,6 +569,8 @@ bot.command('news', async (ctx) => {
         }
         response += `[Подробнее](${row.url})\n\n`;
       });
+
+      console.log('[/news] Отправляем ответ пользователю...');
       ctx.reply(response, { parse_mode: 'Markdown', disable_web_page_preview: false });
     }
   );
@@ -650,10 +638,7 @@ async function repairMissingButtons() {
   });
 }
 bot.command('fixbuttons', async (ctx) => {
-  // Аналогично, если нужно, можно проверить ctx.message
-  if (!ctx.message) {
-    return;
-  }
+  console.log('[/fixbuttons] Команда fixbuttons получена.');
   await ctx.reply('🔧 Начинаю восстановление кнопок...');
   await repairMissingButtons();
   await ctx.reply('✅ Попробовал обновить все сводки.');
@@ -662,17 +647,9 @@ bot.command('fixbuttons', async (ctx) => {
 /* ------------------------------
    9) Cron-задачи
 -------------------------------*/
-
-// Каждую минуту проверяем новые сообщения Teams
 cron.schedule('* * * * *', () => processTeamsMessages());
-
-// Каждый час (мин:00) — отправляем сводку ошибок (если накопились)
 cron.schedule('0 * * * *', () => sendErrorSummaryIfNeeded());
-
-// Сброс обработанных тем ошибок в 00:05
 cron.schedule('5 0 * * *', () => resetProcessedErrorSubjects());
-
-// Очистка старых сводок (старше 3 месяцев) в 03:00
 cron.schedule('0 3 * * *', () => {
   db.run(
     `DELETE FROM error_summaries
@@ -683,21 +660,20 @@ cron.schedule('0 3 * * *', () => {
     }
   );
 });
-
-// Каждые 30 минут — проверяем новости becloud
 cron.schedule('*/30 * * * *', () => processBecloudNews());
 
 /* -------------------------------------
    10) Прочие команды/старт бота
 --------------------------------------*/
 bot.command('start', (ctx) => {
-  // Тоже можно проверить наличие ctx.message
+  console.log('[/start] Команда start получена.');
   ctx.reply('✅ Бот активен. Проверяю Teams и разные новости.');
 });
 
 // Глобальный обработчик ошибок бота
-bot.catch((err) => console.error('Ошибка бота:', err));
+bot.catch((err) => {
+  console.error('Ошибка бота:', err);
+});
 
 // Запуск бота
 bot.start();
-
