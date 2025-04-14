@@ -409,33 +409,90 @@ async function processTeamsMessages() {
 }
 
 /* ----------------------------------------------------------------
-   5) Парсинг becloud — но ФИЛЬТРУЕМ по RegExp
+   5) Парсинг becloud — с фильтрацией по RegExp и отложенной отправкой
 -----------------------------------------------------------------*/
 
-// Регулярка: два варианта заголовка, в конце дата дд.мм.гггг
 const reWantedBecloud = /^(Уведомление о проведении плановых|Ухудшение качества услуги ?«?Интернет»?).*(\d{2}\.\d{2}\.\d{4})$/i;
 
-/* ------------------------------------------
-   2) processBecloudNews (упрощённая)
--------------------------------------------*/
+async function fetchBecloudNewsList() {
+  const baseURL = 'https://becloud.by';
+  const newsURL = `${baseURL}/customers/informing/`;
+  const newsItems = [];
+
+  try {
+    const { data } = await axios.get(newsURL, {
+      httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+      timeout: 10_000,
+    });
+    const $ = cheerio.load(data);
+
+    $('.news__item').each((_, el) => {
+      const $item = $(el);
+      const $titleTag = $item.find('h6 a');
+      const title = $titleTag.text().trim();
+      const href = $titleTag.attr('href');
+
+      if (!title || !href) return;
+
+      const match = title.match(reWantedBecloud);
+      if (!match) return;
+
+      const extractedDate = match[2];
+      const url = href.startsWith('http') ? href : baseURL + href;
+      const news_id = href;
+
+      newsItems.push({
+        source: 'becloud',
+        news_id,
+        title,
+        date: extractedDate,
+        url,
+      });
+    });
+  } catch (err) {
+    console.error('Ошибка при запросе becloud:', err.message);
+    return [];
+  }
+
+  return newsItems;
+}
+
+async function fetchBecloudNewsContent(url) {
+  try {
+    const { data } = await axios.get(url, {
+      httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+      timeout: 10_000,
+    });
+    const $ = cheerio.load(data);
+    return $('.cnt').text().trim();
+  } catch (err) {
+    console.error('Ошибка при загрузке новости becloud:', err.message);
+    return '';
+  }
+}
+
 async function processBecloudNews() {
   const list = await fetchBecloudNewsList();
   if (!list || !list.length) return;
 
-  const now = new Date();
-  const today = toDateOnly(now);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const maxDate = new Date(today);
+  maxDate.setDate(today.getDate() + 3);
 
   for (const item of list) {
-    // Фильтрация новостей по регулярке
-    if (!reWantedBecloud.test(item.title)) {
-      console.log(`[becloud] Пропустили новость (не соответствует фильтру): ${item.title}`);
+    const parsedDate = parseDateDDMMYYYY(item.date);
+    if (!parsedDate) continue;
+    parsedDate.setHours(0, 0, 0, 0);
+
+    if (parsedDate < today || parsedDate > maxDate) {
+      console.log(`[becloud] Пропущена по дате: ${item.title} (${item.date})`);
       continue;
     }
 
-    // Проверка дублей
     const exists = await new Promise((resolve) => {
       db.get(
-        'SELECT id FROM news WHERE source=? AND news_id=?',
+        'SELECT id FROM news WHERE source = ? AND news_id = ?',
         [item.source, item.news_id],
         (err, row) => {
           if (err) {
@@ -446,31 +503,15 @@ async function processBecloudNews() {
         }
       );
     });
-    if (exists) {
-      console.log(`[becloud] Уже есть в БД, пропускаем: ${item.title}`);
-      continue;
-    }
+    if (exists) continue;
 
-    // Парсим дату
-    const parsed = parseDateDDMMYYYY(item.date); // напр. "16.04.2025"
-    if (!parsed) {
-      console.log(`[becloud] Дата в заголовке не распознана (${item.date}). Пропуск.`);
-      continue;
-    }
-    const dateObj = toDateOnly(parsed);
-
-    // Загружаем контент, sum
     const content = await fetchBecloudNewsContent(item.url);
     const summary = await summarizeNewsContent(item.source, content);
     const createdAt = new Date().toISOString();
 
-    // Сохраняем, но posted= (решаем ниже)
-    let postedValue = 0;
+    const posted = parsedDate.getTime() === today.getTime() ? 1 : 0;
 
-    // Если dateObj <= today => отправляем немедленно
-    if (dateObj <= today) {
-      postedValue = 1;
-
+    if (posted === 1) {
       const shortText = summary || (content.slice(0, 500) + '...');
       const msgText = `📰 *Новая новость (${item.source})*\n` +
         `*Заголовок:* ${item.title}\n` +
@@ -482,56 +523,26 @@ async function processBecloudNews() {
         parse_mode: 'Markdown',
         disable_web_page_preview: false,
       });
-      console.log(`[becloud] Дата=${item.date} уже наступила, отправили сразу.`);
     }
 
-    // Сохраняем в БД
-    await new Promise((resolve) => {
-      db.run(
-        `INSERT INTO news
-          (source, news_id, title, date, url, content, summary, created_at, posted)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          item.source,
-          item.news_id,
-          item.title,
-          item.date,
-          item.url,
-          content,
-          summary,
-          createdAt,
-          postedValue
-        ],
-        function (err) {
-          if (err) console.error('DB insert news error:', err);
-          resolve();
-        });
-    });
-
-    // Логируем
-    console.log(`[becloud] Сохранили: ${item.title}, date=${item.date}, posted=${postedValue}`);
+    db.run(
+      `INSERT INTO news (source, news_id, title, date, url, content, summary, created_at, posted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [item.source, item.news_id, item.title, item.date, item.url, content, summary, createdAt, posted],
+      (err) => {
+        if (err) console.error('DB insert error:', err);
+      }
+    );
   }
 }
 
-/* ------------------------------------------
-   3) checkBecloudPlannedDates (каждый день 00:01)
--------------------------------------------*/
 async function checkBecloudPlannedDates() {
-  const now = new Date();
-  const todayStr = getDDMMYYYY(now); // напр. "16.04.2025"
-
+  const todayStr = getDDMMYYYY(new Date());
   db.all(
-    `SELECT * FROM news
-     WHERE source='becloud'
-       AND posted=0
-       AND date=?`,
-    [todayStr], async (err, rows) => {
-      if (err) {
-        console.error('[becloud] DB select posted=0 error:', err);
-        return;
-      }
-      if (!rows || rows.length === 0) return;
-
+    `SELECT * FROM news WHERE source='becloud' AND posted=0 AND date=?`,
+    [todayStr],
+    async (err, rows) => {
+      if (err) return console.error('[becloud] DB error:', err);
       for (const row of rows) {
         const shortText = row.summary || (row.content.slice(0, 500) + '...');
         const msgText = `📰 *Новая новость (${row.source})*\n` +
@@ -544,12 +555,179 @@ async function checkBecloudPlannedDates() {
           parse_mode: 'Markdown',
           disable_web_page_preview: false,
         });
-        console.log(`[becloud] (id=${row.id}) Сегодня ${row.date}, отправили новость.`);
 
-        // Обновляем posted=1
-        db.run('UPDATE news SET posted=1 WHERE id=?', [row.id]);
+        db.run(`UPDATE news SET posted=1 WHERE id=?`, [row.id]);
       }
+    }
+  );
+}
+
+
+/* ----------------------------------------------------------------
+   6) Парсинг ERIP — аналогичная логика (отправка в день события)
+-----------------------------------------------------------------*/
+
+function parseDateDDMonthYYYY(str) {
+  const monthMap = {
+    'янв': 0, 'фев': 1, 'мар': 2, 'апр': 3, 'мая': 4, 'июн': 5,
+    'июл': 6, 'авг': 7, 'сен': 8, 'окт': 9, 'ноя': 10, 'дек': 11,
+  };
+  const parts = str.toLowerCase().split(' ');
+  if (parts.length < 3) return null;
+  const day = parseInt(parts[0], 10);
+  const month = monthMap[parts[1]];
+  const year = parseInt(parts[2], 10);
+  if (isNaN(day) || isNaN(year) || month === undefined) return null;
+  return new Date(year, month, day);
+}
+
+async function fetchEripNewsList() {
+  const baseURL = 'https://raschet.by';
+  const newsURL = `${baseURL}/about/novosti/uvedomleniya/`;
+  const newsItems = [];
+
+  try {
+    const { data } = await axios.get(newsURL, {
+      httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+      timeout: 10_000,
     });
+    const $ = cheerio.load(data);
+
+    $('a.news-item').each((_, el) => {
+      const $a = $(el);
+      const href = $a.attr('href');
+      if (!href) return;
+
+      const dateStr = $a.find('.date').text().trim();
+      const title = $a.find('.news-title').text().trim();
+      if (!dateStr || !title) return;
+
+      const url = href.startsWith('http') ? href : baseURL + href;
+
+      newsItems.push({
+        source: 'erip',
+        news_id: url,
+        title,
+        date: dateStr,
+        url,
+      });
+    });
+  } catch (err) {
+    console.error('Ошибка при запросе ERIP:', err.message);
+    return [];
+  }
+
+  return newsItems;
+}
+
+async function fetchEripNewsContent(url) {
+  try {
+    const { data } = await axios.get(url, {
+      httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+      timeout: 10_000,
+    });
+    const $ = cheerio.load(data);
+    const $detail = $('.news-detail, .item-content');
+    let text = '';
+    $detail.find('p').each((_, p) => {
+      text += $(p).text().trim() + '\n';
+    });
+    return text.trim() || $detail.text().trim();
+  } catch (err) {
+    console.error('Ошибка при загрузке новости ERIP:', err.message);
+    return '';
+  }
+}
+
+async function processEripNews() {
+  const list = await fetchEripNewsList();
+  if (!list || !list.length) return;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const maxDate = new Date(today);
+  maxDate.setDate(today.getDate() + 3);
+
+  for (const item of list) {
+    const parsedDate = parseDateDDMonthYYYY(item.date);
+    if (!parsedDate) continue;
+    parsedDate.setHours(0, 0, 0, 0);
+
+    if (parsedDate < today || parsedDate > maxDate) {
+      console.log(`[erip] Пропущена по дате: ${item.title} (${item.date})`);
+      continue;
+    }
+
+    const exists = await new Promise((resolve) => {
+      db.get(
+        'SELECT id FROM news WHERE source = ? AND news_id = ?',
+        [item.source, item.news_id],
+        (err, row) => {
+          if (err) {
+            console.error('DB check news error:', err);
+            return resolve(true);
+          }
+          resolve(!!row);
+        }
+      );
+    });
+    if (exists) continue;
+
+    const content = await fetchEripNewsContent(item.url);
+    const summary = await summarizeNewsContent(item.source, content);
+    const createdAt = new Date().toISOString();
+
+    const posted = parsedDate.getTime() === today.getTime() ? 1 : 0;
+
+    if (posted === 1) {
+      const shortText = summary || (content.slice(0, 500) + '...');
+      const msgText = `📰 *Новая новость (${item.source})*\n` +
+        `*Заголовок:* ${item.title}\n` +
+        (item.date ? `*Дата:* ${item.date}\n` : '') +
+        (summary ? `*Краткое содержание:* ${summary}\n` : `*Фрагмент:* ${shortText}\n`) +
+        `[Читать подробнее](${item.url})`;
+
+      await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, msgText, {
+        parse_mode: 'Markdown',
+        disable_web_page_preview: false,
+      });
+    }
+
+    db.run(
+      `INSERT INTO news (source, news_id, title, date, url, content, summary, created_at, posted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [item.source, item.news_id, item.title, item.date, item.url, content, summary, createdAt, posted],
+      (err) => {
+        if (err) console.error('DB insert error:', err);
+      }
+    );
+  }
+}
+
+async function checkEripPlannedDates() {
+  const todayStr = getDDMMYYYY(new Date());
+  db.all(
+    `SELECT * FROM news WHERE source='erip' AND posted=0 AND date=?`,
+    [todayStr],
+    async (err, rows) => {
+      if (err) return console.error('[erip] DB error:', err);
+      for (const row of rows) {
+        const shortText = row.summary || (row.content.slice(0, 500) + '...');
+        const msgText = `📰 *Новая новость (${row.source})*\n` +
+          `*Заголовок:* ${row.title}\n` +
+          (row.date ? `*Дата:* ${row.date}\n` : '') +
+          (row.summary ? `*Краткое содержание:* ${row.summary}\n` : `*Фрагмент:* ${shortText}\n`) +
+          `[Читать подробнее](${row.url})`;
+
+        await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, msgText, {
+          parse_mode: 'Markdown',
+          disable_web_page_preview: false,
+        });
+
+        db.run(`UPDATE news SET posted=1 WHERE id=?`, [row.id]);
+      }
+    }
+  );
 }
 
 
@@ -691,6 +869,11 @@ cron.schedule('* * * * *', () => processEripNews());
 cron.schedule('1 0 * * *', async () => {
   console.log('[becloud] Запуск плановой проверки новостей (cron 00:01)');
   await checkBecloudPlannedDates();
+});
+
+cron.schedule('1 0 * * *', async () => {
+  console.log('[erip] Запуск плановой проверки новостей (cron 00:01)');
+  await checkEripPlannedDates();
 });
 
 
