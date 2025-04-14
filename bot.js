@@ -672,6 +672,10 @@ async function checkBecloudPlannedTimes() {
       if (isNaN(plan.getTime())) continue;
 
       const diffMs = plan.getTime() - nowMs;
+      console.log(
+        `[becloud] row.id=${row.id}, plan=${plan.toISOString()}, now=${new Date().toISOString()}, diffMs=${diffMs}`
+      );
+      
       // Если осталось <= 5 часов, но > 0 — уведомляем
       if (diffMs > 0 && diffMs <= 13 * 3600 * 1000) {
         await sendBecloudPreNotification(row);
