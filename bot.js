@@ -413,44 +413,67 @@ async function processTeamsMessages() {
       (пример: becloud, но можно добавить любые другие)
 -----------------------------------------------------------------*/
 async function fetchBecloudNewsList() {
-  const baseURL = 'https://becloud.by';
-  const newsURL = `${baseURL}/customers/informing/`;
-  let newsItems = [];
-
-  try {
-    const { data } = await axios.get(newsURL, {
-      httpsAgent: new https.Agent({ rejectUnauthorized: false }),
-      timeout: 10_000,
-    });
-    const $ = cheerio.load(data);
-
-    $('.news__item').each((_, el) => {
-      const $item = $(el);
-      const $titleTag = $item.find('h6 a');
-      const title = $titleTag.text().trim();
-      const href = $titleTag.attr('href');
-      const date = $item.find('.news-date').text().trim();
-
-      if (!title || !href) return;
-
-      const news_id = href;
-      const url = href.startsWith('http') ? href : (baseURL + href);
-
-      newsItems.push({
-        source: 'becloud',
-        news_id,
-        title,
-        date,
-        url,
+    const baseURL = 'https://becloud.by';
+    const newsURL = `${baseURL}/customers/informing/`;
+    let newsItems = [];
+  
+    try {
+      const { data } = await axios.get(newsURL, {
+        httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+        timeout: 10_000,
       });
-    });
-  } catch (err) {
-    console.error('Ошибка при запросе becloud:', err.message);
-    return [];
+      const $ = cheerio.load(data);
+  
+      $('.news__item').each((_, el) => {
+        const $item = $(el);
+        const $titleTag = $item.find('h6 a');
+        const fullTitle = $titleTag.text().trim(); // полный заголовок, напр.: "Уведомление ... 14.04.2025"
+  
+        // Фильтруем, оставляя только 2 типа заголовков
+        // Для надёжности используем регулярку, проверяя:
+        //   1) начало на одно из:
+        //      - Уведомление о проведении плановых
+        //      - Ухудшение качества услуги
+        //   2) в конце заголовка дата формата дд.мм.гггг
+        // Пример заголовка: "Уведомление о проведении плановых технических работ на сети вышестоящего оператора 14.04.2025"
+        // или:             "Ухудшение качества услуги «Интернет» 20.02.2025"
+        const reWanted = /^(Уведомление о проведении плановых|Ухудшение качества услуги ?«?Интернет»?).*(\d{2}\.\d{2}\.\d{4})$/i;
+        const match = fullTitle.match(reWanted);
+        if (!match) {
+          // Если заголовок не подходит под шаблон, пропускаем
+          return;
+        }
+  
+        const dateFromTitle = match[2]; // во второй группе дата, напр. "14.04.2025" или "20.02.2025"
+        const href = $titleTag.attr('href');
+        const $dateElem = $item.find('.news-date');
+        // Можно взять внутреннюю "дату из блока .news-date",
+        // но раз уже дата есть в заголовке, используем dateFromTitle как основную.
+        const fallbackDate = $dateElem.text().trim(); 
+        
+        // Гарантируем, что у нас есть ссылка
+        if (!href) return;
+  
+        // Формируем уникальный ID (news_id). Обычно берут из href
+        const news_id = href.startsWith('http') ? href : baseURL + href;
+        const url = href.startsWith('http') ? href : (baseURL + href);
+  
+        // Сохраняем нужную информацию
+        newsItems.push({
+          source: 'becloud',
+          news_id,               // уникальный ID
+          title: fullTitle,      // полный заголовок
+          date: dateFromTitle,   // дата, извлечённая из заголовка
+          url,
+        });
+      });
+    } catch (err) {
+      console.error('Ошибка при запросе becloud:', err.message);
+      return [];
+    }
+  
+    return newsItems;
   }
-
-  return newsItems;
-}
 
 async function fetchBecloudNewsContent(url) {
   try {
