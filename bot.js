@@ -434,7 +434,8 @@ function parseDateDDMMYYYY(str) {
 
 // Регулярка для детального текста, ищем: 
 //   "c 12:00 до 18:00 14.04.2025"
-const rePlannedTime = /c\s+(\d{2}:\d{2})\s+до\s+(\d{2}:\d{2})\s+(\d{2}\.\d{2}\.\d{4})/i;
+// Универсальная регулярка на оба случая
+const rePlannedTime = /[cs]\s+(\d{2}:\d{2})\s+(?:до|do)\s+(\d{2}:\d{2})\s+(\d{2}\.\d{2}\.\d{4})/i;
 
 /* ----------------------------------------------------------------
    2) Функции парсинга becloud
@@ -471,7 +472,7 @@ async function fetchBecloudNewsList() {
       const dateStr = match[2];
       const url = href.startsWith('http') ? href : (baseURL + href);
       console.log(`[becloud] parsed from title="${fullTitle}", extracted date="${dateStr}"`);
-      
+
       newsItems.push({
         source: 'becloud',
         news_id: href,
