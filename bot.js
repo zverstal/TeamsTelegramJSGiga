@@ -421,6 +421,11 @@ async function processTeamsMessages() {
 // Для заголовка (пример): "Уведомление о проведении плановых ... 14.04.2025"
 const reWantedBecloud = /^(Уведомление о проведении плановых|Ухудшение качества услуги ?«?Интернет»?).*(\d{2}\.\d{2}\.\d{4})$/i;
 
+
+
+
+
+
 // Преобразуем "14.04.2025" → Date
 function parseDateDDMMYYYY(str) {
   const [day, month, year] = str.split('.');
@@ -445,13 +450,12 @@ function parseDateDDMMYYYY(str) {
 const rePlannedEnd = /[сc]\s+(\d{2}:\d{2})\s+(?:до|do)\s+(\d{2}:\d{2})\s+(\d{2}\.\d{2}\.\d{4})/i;
 const rePlannedStart = /(\d{2}\.\d{2}\.\d{4})\s+[сc]\s+(\d{2}:\d{2})\s+(?:до|do)\s+(\d{2}:\d{2})/i;
 
-/**
- * extractPlannedTime(content):
- * пытается найти planned_time (ISO) либо в формате "c 12:00 до 18:00 14.04.2025"
- * либо "14.04.2025 c 12:00 до 18:00"
- */
+function convertMskToUtc(d) {
+  d.setHours(d.getHours() - 3); // MSK=UTC+3, значит вычитаем 3
+}
+
 function extractPlannedTime(content) {
-  // 1) Пытаемся rePlannedEnd (дата в конце)
+  // 1) rePlannedEnd (дата в конце)
   let match = content.match(rePlannedEnd);
   if (match) {
     // match[1] = "12:00", match[2] = "18:00", match[3] = "14.04.2025"
@@ -461,10 +465,14 @@ function extractPlannedTime(content) {
     if (!d) return null;
     const [hh, mm] = startTimeStr.split(':').map(Number);
     d.setHours(hh, mm, 0, 0);
+
+    // Считаем, что 12:00 - это 12:00 МСК
+    convertMskToUtc(d);
+
     return d.toISOString();
   }
 
-  // 2) Пытаемся rePlannedStart (дата в начале)
+  // 2) rePlannedStart (дата в начале)
   match = content.match(rePlannedStart);
   if (match) {
     // match[1] = "14.04.2025", match[2] = "12:00", match[3] = "18:00"
@@ -474,13 +482,16 @@ function extractPlannedTime(content) {
     if (!d) return null;
     const [hh, mm] = startTimeStr.split(':').map(Number);
     d.setHours(hh, mm, 0, 0);
+
+    // Перевод из МСК в UTC
+    convertMskToUtc(d);
+
     return d.toISOString();
   }
 
-  // Не нашли ни в одном формате
+  // Ни один шаблон не сработал
   return null;
 }
-
 /* ----------------------------------------------------------------
    2) Функции парсинга becloud
 -----------------------------------------------------------------*/
