@@ -567,26 +567,13 @@ async function checkBecloudPlannedDates() {
    6) Парсинг ERIP — аналогичная логика (отправка в день события)
 -----------------------------------------------------------------*/
 
-function parseDateDDMonthYYYY(str) {
-  const monthMap = {
-    'янв': 0, 'фев': 1, 'мар': 2, 'апр': 3, 'мая': 4, 'июн': 5,
-    'июл': 6, 'авг': 7, 'сен': 8, 'окт': 9, 'ноя': 10, 'дек': 11,
-  };
-  const parts = str.toLowerCase().split(' ');
-  if (parts.length < 3) return null;
-  const day = parseInt(parts[0], 10);
-  const month = monthMap[parts[1]];
-  const year = parseInt(parts[2], 10);
-  if (isNaN(day) || isNaN(year) || month === undefined) return null;
-  return new Date(year, month, day);
-}
+// Обновлённая регулярка для новостей по техническим работам, только для ЕРИП
+const reEripTechnicalWorks = /^Технические работы(?:\s+в(?:\s+системе)?)?\s+ЕРИП.*?(\d{1,2}\s?[а-я]{3,}\s?\d{4})/i;
 
 async function fetchEripNewsList() {
   const baseURL = 'https://raschet.by';
   const newsURL = `${baseURL}/about/novosti/uvedomleniya/`;
   const newsItems = [];
-  // Регулярное выражение для новостей «Технические работы в ЕРИП»
-  const reEripTechnicalWorks = /^Технические работы в ЕРИП.*?(\d{1,2}\s?[а-я]{3,}\s?\d{4})/i;
 
   try {
     const { data } = await axios.get(newsURL, {
