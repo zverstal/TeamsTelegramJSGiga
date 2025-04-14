@@ -592,8 +592,10 @@ async function fetchEripNewsList() {
       const title = $a.find('.news-title').text().trim();
       if (!title) return;
 
-      // Если дата не указана, но заголовок соответствует "Технические работы в ЕРИП",
-      // пытаемся извлечь дату из заголовка с помощью регулярки
+      // Добавлена проверка: если в заголовке нет слова "ЕРИП", новость отбрасывается
+      if (!/ЕРИП/i.test(title)) return;
+
+      // Если дата не указана, пытаемся извлечь дату из заголовка с помощью регулярки
       if (!dateStr) {
         const match = title.match(reEripTechnicalWorks);
         if (match) {
@@ -619,6 +621,7 @@ async function fetchEripNewsList() {
 
   return newsItems;
 }
+
 
 async function fetchEripNewsContent(url) {
   try {
