@@ -27,7 +27,7 @@ function initDatabase() {
   db = new sqlite3.Database(path.join(__dirname, 'summaries.db'), (err) => {
     if (err) return console.error('SQLite error:', err);
 
-    // Таблица для сводок об ошибках
+    // Таблица для хранения сводок об ошибках
     db.run(`
       CREATE TABLE IF NOT EXISTS error_summaries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,7 +39,7 @@ function initDatabase() {
       )
     `);
 
-    // Универсальная таблица для любых новостей
+    // Универсальная таблица для любых новостей (из разных источников)
     db.run(`
       CREATE TABLE IF NOT EXISTS news (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -236,7 +236,6 @@ async function summarizeMessages(messages, lastMsgId) {
 ${list}
 `.trim();
 
-  // Пример запроса в OpenAI (модель и параметры меняйте под себя)
   try {
     const response = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: 'gpt-4o-mini',
@@ -262,7 +261,6 @@ ${list}
       (УНИВЕРСАЛЬНЫЙ для разных источников)
 --------------------------------------------*/
 async function summarizeNewsContent(source, rawText) {
-  // Универсальный промт для краткого пересказа новости
   const prompt = `
 У тебя есть текст новости. Источник: ${source}.
 Задача: составь краткое и понятное резюме новости (не более 2-3 предложений), передавая основные факты, даты, события, причины или последствия.
@@ -324,7 +322,7 @@ async function sendErrorSummaryIfNeeded() {
     subject: e.subject,
     date: e.createdDateTime,
   }));
-  collectedErrors.length = 0; // очистим
+  collectedErrors.length = 0;
 
   const msg = await bot.api.sendMessage(process.env.TELEGRAM_CHAT_ID, summary, {
     parse_mode: 'Markdown',
@@ -360,17 +358,14 @@ async function processTeamsMessages() {
   const messages = await fetchTeamsMessages(token, process.env.TEAM_ID, process.env.CHANNEL_ID);
   if (!messages || !messages.length) return;
 
-  // Берём только те, что идут после последнего обработанного
   const newMessages = messages.filter(
     (m) => !lastProcessedMessageId || m.id > lastProcessedMessageId
   );
   if (newMessages.length === 0) return;
 
-  // Обновляем последний обработанный
   lastProcessedMessageId = newMessages[newMessages.length - 1].id;
   await saveLastProcessedMessageId(lastProcessedMessageId);
 
-  // Разделяем на ошибки и обычные
   const errors = newMessages.filter((m) => m.isError);
   const normal = newMessages.filter((m) => !m.isError);
 
@@ -380,7 +375,6 @@ async function processTeamsMessages() {
     msg.type = type;
     msg.extractedId = id;
 
-    // Если тема ещё не встречалась, отправим уведомление
     if (!processedErrorSubjects.has(msg.subject)) {
       await bot.api.sendMessage(
         process.env.TELEGRAM_CHAT_ID,
@@ -390,12 +384,11 @@ async function processTeamsMessages() {
       processedErrorSubjects.add(msg.subject);
       await saveProcessedErrorSubjects();
     } else {
-      // Иначе складируем, чтобы потом отправить сводку
       collectedErrors.push(msg);
     }
   }
 
-  // Суммаризируем обычные сообщения, если есть
+  // Суммаризируем обычные
   if (normal.length > 0) {
     const summary = await summarizeMessages(normal, lastProcessedMessageId);
     if (summary) {
@@ -409,72 +402,81 @@ async function processTeamsMessages() {
 }
 
 /* ----------------------------------------------------------------
-   5) Универсальный механизм сбора новостей с разных источников
-      (пример: becloud, но можно добавить любые другие)
+   5) Механизм сбора новостей: ТОЛЬКО 2 варианта заголовка + проверка
+      "сегодня + 3 дня"
 -----------------------------------------------------------------*/
+
+// Функция парсинга строки "DD.MM.YYYY" в Date
+function parseDateDDMMYYYY(str) {
+  const [day, month, year] = str.split('.');
+  if (!day || !month || !year) return null;
+  const d = new Date(+year, +month - 1, +day);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Функция fetchBecloudNewsList:
+ * - Парсит список.
+ * - Берёт ТОЛЬКО заголовки, начинающиеся на:
+ *   1) Уведомление о проведении плановых
+ *   2) Ухудшение качества услуги Интернет
+ * - Имеющие в самом конце дату формата дд.мм.гггг
+ */
 async function fetchBecloudNewsList() {
-    const baseURL = 'https://becloud.by';
-    const newsURL = `${baseURL}/customers/informing/`;
-    let newsItems = [];
-  
-    try {
-      const { data } = await axios.get(newsURL, {
-        httpsAgent: new https.Agent({ rejectUnauthorized: false }),
-        timeout: 10_000,
+  const baseURL = 'https://becloud.by';
+  const newsURL = `${baseURL}/customers/informing/`;
+  let newsItems = [];
+
+  try {
+    const { data } = await axios.get(newsURL, {
+      httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+      timeout: 10_000,
+    });
+    const $ = cheerio.load(data);
+
+    // Регулярка, ищем в заголовке:
+    //   Начало: "Уведомление о проведении плановых" или "Ухудшение качества услуги Интернет"
+    //   Потом любые символы
+    //   В конце дата дд.мм.гггг
+    const reWanted = /^(Уведомление о проведении плановых|Ухудшение качества услуги ?«?Интернет»?).*(\d{2}\.\d{2}\.\d{4})$/i;
+
+    $('.news__item').each((_, el) => {
+      const $item = $(el);
+      const $titleTag = $item.find('h6 a');
+      const fullTitle = $titleTag.text().trim();
+      const match = fullTitle.match(reWanted);
+      if (!match) {
+        // Пропускаем заголовки, не удовлетворяющие нужному шаблону
+        return;
+      }
+
+      // Извлекаем дату (из второй группы регекспа)
+      const dateFromTitle = match[2]; // напр. "14.04.2025"
+
+      const href = $titleTag.attr('href');
+      if (!href) return;
+
+      const url = href.startsWith('http') ? href : (baseURL + href);
+      // формируем ID
+      const news_id = url;
+
+      newsItems.push({
+        source: 'becloud',
+        news_id,
+        title: fullTitle,      // весь заголовок
+        date: dateFromTitle,   // "дд.мм.гггг"
+        url,
       });
-      const $ = cheerio.load(data);
-  
-      $('.news__item').each((_, el) => {
-        const $item = $(el);
-        const $titleTag = $item.find('h6 a');
-        const fullTitle = $titleTag.text().trim(); // полный заголовок, напр.: "Уведомление ... 14.04.2025"
-  
-        // Фильтруем, оставляя только 2 типа заголовков
-        // Для надёжности используем регулярку, проверяя:
-        //   1) начало на одно из:
-        //      - Уведомление о проведении плановых
-        //      - Ухудшение качества услуги
-        //   2) в конце заголовка дата формата дд.мм.гггг
-        // Пример заголовка: "Уведомление о проведении плановых технических работ на сети вышестоящего оператора 14.04.2025"
-        // или:             "Ухудшение качества услуги «Интернет» 20.02.2025"
-        const reWanted = /^(Уведомление о проведении плановых|Ухудшение качества услуги ?«?Интернет»?).*(\d{2}\.\d{2}\.\d{4})$/i;
-        const match = fullTitle.match(reWanted);
-        if (!match) {
-          // Если заголовок не подходит под шаблон, пропускаем
-          return;
-        }
-  
-        const dateFromTitle = match[2]; // во второй группе дата, напр. "14.04.2025" или "20.02.2025"
-        const href = $titleTag.attr('href');
-        const $dateElem = $item.find('.news-date');
-        // Можно взять внутреннюю "дату из блока .news-date",
-        // но раз уже дата есть в заголовке, используем dateFromTitle как основную.
-        const fallbackDate = $dateElem.text().trim(); 
-        
-        // Гарантируем, что у нас есть ссылка
-        if (!href) return;
-  
-        // Формируем уникальный ID (news_id). Обычно берут из href
-        const news_id = href.startsWith('http') ? href : baseURL + href;
-        const url = href.startsWith('http') ? href : (baseURL + href);
-  
-        // Сохраняем нужную информацию
-        newsItems.push({
-          source: 'becloud',
-          news_id,               // уникальный ID
-          title: fullTitle,      // полный заголовок
-          date: dateFromTitle,   // дата, извлечённая из заголовка
-          url,
-        });
-      });
-    } catch (err) {
-      console.error('Ошибка при запросе becloud:', err.message);
-      return [];
-    }
-  
-    return newsItems;
+    });
+  } catch (err) {
+    console.error('Ошибка при запросе becloud:', err.message);
+    return [];
   }
 
+  return newsItems;
+}
+
+// Загрузка полного текста новости
 async function fetchBecloudNewsContent(url) {
   try {
     const { data } = await axios.get(url, {
@@ -482,8 +484,7 @@ async function fetchBecloudNewsContent(url) {
       timeout: 10_000,
     });
     const $ = cheerio.load(data);
-
-    // Предположим, что основной текст в div.cnt
+    // Предположим, что основной текст в .cnt
     const content = $('.cnt').text().trim();
     return content;
   } catch (err) {
@@ -492,11 +493,47 @@ async function fetchBecloudNewsContent(url) {
   }
 }
 
+/**
+ * processBecloudNews:
+ * 1) Получаем список (только нужные заголовки)
+ * 2) Проверяем дату: только [сегодня; сегодня+3 дня]
+ * 3) Если новость не была в БД – вставляем и рассылаем
+ */
 async function processBecloudNews() {
   const list = await fetchBecloudNewsList();
-  if (!list || !list.length) return;
+  if (!list || !list.length) {
+    console.log('[becloud] Список новостей пуст, выходим.');
+    return;
+  }
+
+  // готовим "сегодня" и "сегодня+3"
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const maxDate = new Date(today);
+  maxDate.setDate(maxDate.getDate() + 3);
 
   for (const item of list) {
+    // Парсим дату из item.date (дд.мм.гггг)
+    const newsDate = parseDateDDMMYYYY(item.date);
+    if (!newsDate) {
+      console.log(`[becloud] Не смогли распарсить дату: '${item.date}' (заголовок: "${item.title}"). Пропускаем.`);
+      continue;
+    }
+    // Сравниваем только день/месяц/год
+    const dateOnly = new Date(newsDate.getFullYear(), newsDate.getMonth(), newsDate.getDate());
+
+    // newsDate не должна быть < today (чтобы не брать "прошлые" работы)
+    if (dateOnly < today) {
+      console.log(`[becloud] Дата ${item.date} раньше сегодня. Пропускаем (заголовок: "${item.title}").`);
+      continue;
+    }
+    // И не должна быть позже, чем +3 дня
+    if (dateOnly > maxDate) {
+      console.log(`[becloud] Дата ${item.date} позже, чем +3 дня. Пропускаем (заголовок: "${item.title}").`);
+      continue;
+    }
+
+    // Проверяем в БД
     const exists = await new Promise((resolve) => {
       db.get(
         `SELECT id FROM news WHERE source = ? AND news_id = ?`,
@@ -510,11 +547,18 @@ async function processBecloudNews() {
         }
       );
     });
-    if (exists) continue;
+    if (exists) {
+      console.log(`[becloud] Новость уже есть (title="${item.title}"). Пропускаем.`);
+      continue;
+    }
 
+    // Загружаем полный текст
     const content = await fetchBecloudNewsContent(item.url);
+
+    // Делаем AI-суммаризацию
     const summary = await summarizeNewsContent(item.source, content);
 
+    // Сохраняем в БД
     const createdAt = new Date().toISOString();
     await new Promise((resolve) => {
       db.run(
@@ -524,7 +568,7 @@ async function processBecloudNews() {
           item.source,
           item.news_id,
           item.title,
-          item.date,
+          item.date,   // "дд.мм.гггг"
           item.url,
           content,
           summary,
@@ -537,11 +581,12 @@ async function processBecloudNews() {
       );
     });
 
+    // Отправляем сообщение в Telegram
     const shortText = summary || (content.slice(0, 500) + '...');
     const msgText =
       `📰 *Новая новость (${item.source})*\n` +
       `*Заголовок:* ${item.title}\n` +
-      (item.date ? `*Дата:* ${item.date}\n` : '') +
+      `*Дата:* ${item.date}\n` +
       (summary ? `*Краткое содержание:* ${summary}\n` : `*Фрагмент:* ${shortText}\n`) +
       `[Читать подробнее](${item.url})`;
 
@@ -553,21 +598,18 @@ async function processBecloudNews() {
 }
 
 /* --------------------------------------------------
-   6) Команда /news — делаем как /start, без лишних if
+   6) Команда /news для вывода последних N новостей
 ----------------------------------------------------*/
 bot.command('news', async (ctx) => {
   console.log('[/news] Команда /news была вызвана.');
 
-  // Просто читаем текст, если его нет, будет пустая строка.
   const messageText = ctx.message?.text || '';
   console.log(`[/news] Текст сообщения: "${messageText}"`);
 
-  // Логика парсинга лимита
   const parts = messageText.split(' ');
   const limit = parseInt(parts[1], 10) || 3;
   console.log(`[/news] Будем показывать последние ${limit} новостей.`);
 
-  // Достаем новости из БД
   console.log('[/news] Запрашиваем новости из БД...');
   db.all(
     `SELECT * FROM news ORDER BY id DESC LIMIT ?`,
@@ -670,9 +712,17 @@ bot.command('fixbuttons', async (ctx) => {
 /* ------------------------------
    9) Cron-задачи
 -------------------------------*/
+
+// Каждую минуту — проверяем новые сообщения Teams
 cron.schedule('* * * * *', () => processTeamsMessages());
+
+// Каждый час (мин:00) — отправляем сводку ошибок (если накопились)
 cron.schedule('0 * * * *', () => sendErrorSummaryIfNeeded());
+
+// Сброс обработанных тем ошибок в 00:05
 cron.schedule('5 0 * * *', () => resetProcessedErrorSubjects());
+
+// Очистка старых сводок (старше 3 месяцев) в 03:00
 cron.schedule('0 3 * * *', () => {
   db.run(
     `DELETE FROM error_summaries
@@ -683,7 +733,9 @@ cron.schedule('0 3 * * *', () => {
     }
   );
 });
-cron.schedule('* * * * *', () => processBecloudNews());
+
+// Каждые 30 минут — проверяем новости becloud
+cron.schedule('*/30 * * * *', () => processBecloudNews());
 
 /* -------------------------------------
    10) Прочие команды/старт бота
