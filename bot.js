@@ -683,9 +683,16 @@ cron.schedule('0 3 * * *', () => {
 });
 
 // Каждые 30 минут — проверяем becloud
-cron.schedule('*/30 * * * *', () => processBecloudNews());
+cron.schedule('* * * * *', () => processBecloudNews());
 // Каждые 30 минут — проверяем ERIP
-cron.schedule('*/30 * * * *', () => processEripNews());
+cron.schedule('* * * * *', () => processEripNews());
+
+cron.schedule('1 0 * * *', async () => {
+  console.log('[becloud] Запуск плановой проверки новостей (cron 00:01)');
+  await checkBecloudPlannedDates();
+});
+
+
 
 
 
