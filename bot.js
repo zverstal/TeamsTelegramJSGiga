@@ -415,14 +415,16 @@ async function processTeamsMessages() {
 }
 
 /* ----------------------------------------------------------------
-   5) Парсинг becloud — заголовки + время начала, 
-      но отправка за 5 часов до planned_time
+   1) Константы и вспомогательные функции
 -----------------------------------------------------------------*/
 
-// Пример RegExp для заголовков
+// Регулярка для заголовка: берем заголовки вида:
+//   "Уведомление о проведении плановых ..." или
+//   "Ухудшение качества услуги ?«?Интернет»? ..." 
+// в конце которых есть "дд.мм.гггг"
 const reWantedBecloud = /^(Уведомление о проведении плановых|Ухудшение качества услуги ?«?Интернет»?).*(\d{2}\.\d{2}\.\d{4})$/i;
 
-// Парсим "дд.мм.гггг"
+// Преобразуем "дд.мм.гггг" → Date
 function parseDateDDMMYYYY(str) {
   const [day, month, year] = str.split('.');
   if (!day || !month || !year) return null;
@@ -430,11 +432,19 @@ function parseDateDDMMYYYY(str) {
   return isNaN(d.getTime()) ? null : d;
 }
 
+// Регулярка для детального текста, ищем: 
+//   "c 12:00 до 18:00 14.04.2025"
+const rePlannedTime = /c\s+(\d{2}:\d{2})\s+до\s+(\d{2}:\d{2})\s+(\d{2}\.\d{2}\.\d{4})/i;
 
+/* ----------------------------------------------------------------
+   2) Функции парсинга becloud
+-----------------------------------------------------------------*/
+
+// Получаем список новостей becloud
 async function fetchBecloudNewsList() {
   const baseURL = 'https://becloud.by';
   const newsURL = `${baseURL}/customers/informing/`;
-  const newsItems = [];
+  let newsItems = [];
 
   try {
     const { data } = await axios.get(newsURL, {
@@ -443,25 +453,29 @@ async function fetchBecloudNewsList() {
     });
     const $ = cheerio.load(data);
 
+    // Ищем .news__item
     $('.news__item').each((_, el) => {
       const $item = $(el);
-      const $titleTag = $item.find('h6 a');
-      const fullTitle = $titleTag.text().trim();
-      const href = $titleTag.attr('href');
+      const $link = $item.find('h6 a');
+      if (!$link.length) return;
+
+      const fullTitle = $link.text().trim(); // "Уведомление ... 14.04.2025"
+      const href = $link.attr('href');
       if (!fullTitle || !href) return;
 
-      // Проверяем заголовки
+      // Проверяем заголовок по регулярке
       const match = fullTitle.match(reWantedBecloud);
       if (!match) return;
 
-      const extractedDate = match[2]; // "16.04.2025"
+      // match[2] → "14.04.2025"
+      const dateStr = match[2];
       const url = href.startsWith('http') ? href : (baseURL + href);
 
       newsItems.push({
         source: 'becloud',
         news_id: href,
         title: fullTitle,
-        date: extractedDate,
+        date: dateStr, // дата работ "14.04.2025"
         url,
       });
     });
@@ -473,6 +487,7 @@ async function fetchBecloudNewsList() {
   return newsItems;
 }
 
+// Загружаем полный текст новости (детальную страницу)
 async function fetchBecloudNewsContent(url) {
   try {
     const { data } = await axios.get(url, {
@@ -480,44 +495,47 @@ async function fetchBecloudNewsContent(url) {
       timeout: 10_000,
     });
     const $ = cheerio.load(data);
-
-    // Предположим, основной контент в .cnt
-    const content = $('.cnt').text().trim();
-    return content;
+    // Предполагаем, что основной текст в .cnt
+    return $('.cnt').text().trim();
   } catch (err) {
     console.error('Ошибка при загрузке becloud-новости:', err.message);
     return '';
   }
 }
 
-// Регулярка для извлечения времени: "c 12:00 до 18:00 14.04.2025"
-const rePlannedTime = /c\s+(\d{2}:\d{2})\s+до\s+(\d{2}:\d{2})\s+(\d{2}\.\d{2}\.\d{4})/i;
-
+/* ----------------------------------------------------------------
+   3) Основная функция processBecloudNews
+   - Парсит
+   - Фильтрует по [today; today+3]
+   - Ищет точное время
+   - Сохраняет (posted=0)
+-----------------------------------------------------------------*/
 async function processBecloudNews() {
-  const list = await fetchBecloudNewsList(); // Парсит заголовки
+  const list = await fetchBecloudNewsList();
   if (!list || !list.length) return;
 
+  // Порог дат [сегодня; +3 дня]
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const maxDate = new Date(today);
   maxDate.setDate(maxDate.getDate() + 3);
 
   for (const item of list) {
-    // Извлекаем дату из заголовка: "дд.мм.гггг"
-    const parsedHeadlineDate = parseDateDDMMYYYY(item.date);
-    if (!parsedHeadlineDate) continue;
+    // Парсим дату (из заголовка)
+    const parsed = parseDateDDMMYYYY(item.date);
+    if (!parsed) continue;
 
-    // Проверка: [today; today+3]
-    const dateOnly = new Date(parsedHeadlineDate.getFullYear(), parsedHeadlineDate.getMonth(), parsedHeadlineDate.getDate());
+    // Сравниваем дату "день в заголовке" с [today; today+3]
+    const dateOnly = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
     if (dateOnly < today || dateOnly > maxDate) {
-      console.log(`[becloud] Дата ${item.date} не в диапазоне. Пропускаем.`);
+      console.log(`[becloud] Дата ${item.date} вне диапазона [сегодня, +3]. Пропускаем.`);
       continue;
     }
 
-    // Проверяем дубликаты
+    // Проверяем, нет ли уже (дубли)
     const exists = await new Promise((resolve) => {
       db.get(
-        `SELECT id FROM news WHERE source = ? AND news_id = ?`,
+        `SELECT id FROM news WHERE source=? AND news_id=?`,
         [item.source, item.news_id],
         (err, row) => {
           if (err) {
@@ -530,15 +548,16 @@ async function processBecloudNews() {
     });
     if (exists) continue;
 
-    // Загружаем полный текст, ищем точное время
-    const content = await fetchBecloudNewsContent(item.url); // функция, возвращающая HTML-текст
+    // Загружаем детальный текст
+    const content = await fetchBecloudNewsContent(item.url);
     let plannedTimeISO = null;
 
+    // Ищем "c HH:MM до HH:MM DD.MM.YYYY"
     const m = content.match(rePlannedTime);
     if (m) {
-      // m[1] = "12:00", m[2] = "18:00", m[3] = "14.04.2025"
-      const startTimeStr = m[1];     // "12:00"
-      const dateStr = m[3];         // "14.04.2025"
+      // m[1] = "12:00", m[3] = "14.04.2025"
+      const startTimeStr = m[1];
+      const dateStr = m[3];
       const d = parseDateDDMMYYYY(dateStr);
       if (d) {
         const [hh, mm] = startTimeStr.split(':').map(Number);
@@ -546,46 +565,46 @@ async function processBecloudNews() {
         plannedTimeISO = d.toISOString();
       }
     } else {
-      console.log(`[becloud] Не нашли во внутреннем тексте «c 12:00 до ... dd.mm.yyyy». Пропускаем.`);
+      // Если не нашли время, пропускаем
+      console.log(`[becloud] Не нашли время работ в тексте. Пропускаем.`);
       continue;
     }
 
-    // Сохраняем (posted=0)
+    // GPT-краткое summary
     const summary = await summarizeNewsContent(item.source, content);
     const createdAt = new Date().toISOString();
 
+    // Сохраняем (posted=0)
     await new Promise((resolve) => {
-      db.run(`
-        INSERT INTO news
+      db.run(
+        `INSERT INTO news
         (source, news_id, title, date, url, content, summary, created_at, planned_time, posted)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-      `,
-      [
-        item.source,
-        item.news_id,
-        item.title,
-        item.date,
-        item.url,
-        content,
-        summary,
-        createdAt,
-        plannedTimeISO
-      ],
-      function (err) {
-        if (err) console.error('DB insert news error:', err);
-        resolve();
-      });
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+        [
+          item.source,
+          item.news_id,
+          item.title,
+          item.date,
+          item.url,
+          content,
+          summary,
+          createdAt,
+          plannedTimeISO,
+        ],
+        function (err) {
+          if (err) console.error('DB insert news error:', err);
+          resolve();
+        }
+      );
     });
 
     console.log(`[becloud] Сохранили: ${item.title}, planned_time=${plannedTimeISO}`);
   }
 }
 
-/**
- * checkBecloudPlannedTimes():
- * - Выбираем все becloud-новости, где posted=0 и planned_time != null
- * - Если до начала осталось <= 5 часов (и > 0), отправляем
- */
+/* ----------------------------------------------------------------
+   4) Проверка: не пора ли за 5 часов до planned_time
+-----------------------------------------------------------------*/
 async function checkBecloudPlannedTimes() {
   const nowMs = Date.now();
 
@@ -605,12 +624,11 @@ async function checkBecloudPlannedTimes() {
 
     for (const row of rows) {
       const plan = new Date(row.planned_time);
-      if (isNaN(plan.getTime())) {
-        continue;
-      }
+      if (isNaN(plan.getTime())) continue;
+
       const diffMs = plan.getTime() - nowMs;
-      // Если 0 < diffMs <= 5h => отправляем
-      if (diffMs > 0 && diffMs <= 5 * 60 * 60 * 1000) {
+      // Если 0 < diffMs <= 5 ч => отправить
+      if (diffMs > 0 && diffMs <= 5 * 3600 * 1000) {
         // Отправить сообщение
         await sendBecloudPreNotification(row);
         // posted=1
@@ -620,7 +638,7 @@ async function checkBecloudPlannedTimes() {
   });
 }
 
-// Отправка «за 5 часов» уведомления
+// Отправка уведомления «за 5 часов»
 async function sendBecloudPreNotification(row) {
   const shortText = row.summary || (row.content.slice(0, 500) + '...');
   const msgText =
@@ -634,9 +652,8 @@ async function sendBecloudPreNotification(row) {
     parse_mode: 'Markdown',
     disable_web_page_preview: false,
   });
-  console.log(`[becloud] (id=${row.id}) Отправлено «за 5 часов» до плановых работ.`);
+  console.log(`[becloud] (id=${row.id}) Уведомление «за 5 часов» отправлено.`);
 }
-
 /* ----------------------------------------------------------------
    6) Парсинг ERIP (raschet.by) — только [сегодня; +3 дня]
 -----------------------------------------------------------------*/
