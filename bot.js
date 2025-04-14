@@ -673,7 +673,7 @@ async function checkBecloudPlannedTimes() {
 
       const diffMs = plan.getTime() - nowMs;
       // Если осталось <= 5 часов, но > 0 — уведомляем
-      if (diffMs > 0 && diffMs <= 5 * 3600 * 1000) {
+      if (diffMs > 0 && diffMs <= 13 * 3600 * 1000) {
         await sendBecloudPreNotification(row);
         db.run(`UPDATE news SET posted=1 WHERE id=?`, [row.id]);
       }
