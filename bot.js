@@ -412,7 +412,8 @@ async function processTeamsMessages() {
    5) Парсинг becloud — с фильтрацией по RegExp и отложенной отправкой
 -----------------------------------------------------------------*/
 
-const reWantedBecloud = /^(Уведомление о проведении плановых|Ухудшение качества услуги ?«?Интернет»?).*(\d{2}\.\d{2}\.\d{4})$/i;
+// Исправленная регулярка для becloud: удалён завершающий якорь, чтобы корректно отбирать даже при наличии дополнительного текста
+const reWantedBecloud = /^(Уведомление о проведении плановых|Ухудшение качества услуги ?«?Интернет»?).*(\d{2}\.\d{2}\.\d{4})/i;
 
 async function fetchBecloudNewsList() {
   const baseURL = 'https://becloud.by';
@@ -562,7 +563,6 @@ async function checkBecloudPlannedDates() {
   );
 }
 
-
 /* ----------------------------------------------------------------
    6) Парсинг ERIP — аналогичная логика (отправка в день события)
 -----------------------------------------------------------------*/
@@ -585,6 +585,8 @@ async function fetchEripNewsList() {
   const baseURL = 'https://raschet.by';
   const newsURL = `${baseURL}/about/novosti/uvedomleniya/`;
   const newsItems = [];
+  // Регулярное выражение для новостей «Технические работы в ЕРИП»
+  const reEripTechnicalWorks = /^Технические работы в ЕРИП.*?(\d{1,2}\s?[а-я]{3,}\s?\d{4})/i;
 
   try {
     const { data } = await axios.get(newsURL, {
@@ -598,9 +600,20 @@ async function fetchEripNewsList() {
       const href = $a.attr('href');
       if (!href) return;
 
-      const dateStr = $a.find('.date').text().trim();
+      // Получаем дату и заголовок
+      let dateStr = $a.find('.date').text().trim();
       const title = $a.find('.news-title').text().trim();
-      if (!dateStr || !title) return;
+      if (!title) return;
+
+      // Если дата не указана, но заголовок соответствует "Технические работы в ЕРИП",
+      // пытаемся извлечь дату из заголовка с помощью регулярки
+      if (!dateStr) {
+        const match = title.match(reEripTechnicalWorks);
+        if (match) {
+          dateStr = match[1];
+        }
+      }
+      if (!dateStr) return;
 
       const url = href.startsWith('http') ? href : baseURL + href;
 
@@ -729,7 +742,6 @@ async function checkEripPlannedDates() {
     }
   );
 }
-
 
 /* --------------------------------------------------
    7) Команда /news для вывода последних N новостей
@@ -876,8 +888,6 @@ cron.schedule('1 0 * * *', async () => {
   await checkEripPlannedDates();
 });
 
-
-
 /* -------------------------------------
    11) Прочие команды/старт бота
 --------------------------------------*/
@@ -893,3 +903,18 @@ bot.catch((err) => {
 
 // Запуск бота
 bot.start();
+
+// Вспомогательные функции для работы с датами
+function getDDMMYYYY(date) {
+  const dd = String(date.getDate()).padStart(2, '0');
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const yyyy = date.getFullYear();
+  return `${dd}.${mm}.${yyyy}`;
+}
+
+function parseDateDDMMYYYY(str) {
+  const parts = str.split('.');
+  if (parts.length !== 3) return null;
+  const [dd, mm, yyyy] = parts;
+  return new Date(yyyy, mm - 1, dd);
+}
