@@ -430,8 +430,6 @@ function parseDateDDMMYYYY(str) {
   return isNaN(d.getTime()) ? null : d;
 }
 
-// Ищем в тексте "с 02:00 до 06:00 16.04.2025"
-const rePlannedTime = /с\s*(\d{2}:\d{2})\s*до\s*\d{2}:\d{2}\s+(\d{2}\.\d{2}\.\d{4})/i;
 
 async function fetchBecloudNewsList() {
   const baseURL = 'https://becloud.by';
