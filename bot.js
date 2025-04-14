@@ -470,7 +470,8 @@ async function fetchBecloudNewsList() {
       // match[2] → "14.04.2025"
       const dateStr = match[2];
       const url = href.startsWith('http') ? href : (baseURL + href);
-
+      console.log(`[becloud] parsed from title="${fullTitle}", extracted date="${dateStr}"`);
+      
       newsItems.push({
         source: 'becloud',
         news_id: href,
