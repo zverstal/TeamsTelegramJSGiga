@@ -897,9 +897,9 @@ cron.schedule('0 3 * * *', () => {
 });
 
 // Каждые 30 минут — проверяем becloud
-cron.schedule('* * * * *', () => processBecloudNews());
+cron.schedule('*/30 * * * *', () => processBecloudNews());
 // Каждые 30 минут — проверяем ERIP
-cron.schedule('* * * * *', () => processEripNews());
+cron.schedule('*/30 * * * *', () => processEripNews());
 
 /* -------------------------------------
    11) Прочие команды/старт бота
