@@ -735,7 +735,7 @@ cron.schedule('0 3 * * *', () => {
 });
 
 // Каждые 30 минут — проверяем новости becloud
-cron.schedule('* * * * *', () => processBecloudNews());
+cron.schedule('*/30 * * * *', () => processBecloudNews());
 
 /* -------------------------------------
    10) Прочие команды/старт бота
