@@ -11,6 +11,7 @@ const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const crypto = require('crypto');
 const winston = require('winston');
+const { DateTime } = require('luxon');
 
 /* -------- 0. Логгер -------- */
 const logDir = path.join(__dirname, 'logs');
@@ -71,24 +72,66 @@ function todayStr() { return new Date().toISOString().slice(0, 10); }
 function buildCsv(rows) {
   return ['hour,type,count', ...rows.map(r => `${r.hour},${r.type},${r.cnt}`)].join('\n');
 }
+
+// Экспортирует summary и детали в один CSV, без кракозябр, с BOM и кавычками
 async function generateCsvForDate(dateIso) {
-  logger.info(`[CSV] Генерация за ${dateIso}`);
   return new Promise((resolve) => {
-    db.all(
-      `SELECT strftime('%H', created_at, 'localtime') as hour, type, COUNT(*) as cnt FROM error_events WHERE date(created_at, 'localtime') = ? GROUP BY hour, type ORDER BY hour, type`,
-      [dateIso],
-      (err, rows) => {
-        if (err) { logger.error('[CSV] SQL error: ' + err); return resolve(null); }
-        const dir = path.join(__dirname, 'reports');
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        const fileName = `errors_${dateIso}_${new Date().toISOString().slice(11, 13)}00.csv`;
-        const filePath = path.join(dir, fileName);
-        fs.writeFileSync(filePath, buildCsv(rows), 'utf8');
-        logger.info(`[CSV] Сохранён: ${filePath}`);
-        resolve({ filePath, fileName });
+    db.all(`
+      SELECT created_at, type, extracted_id as id, subject
+      FROM error_events
+      WHERE date(created_at, 'localtime') = ?
+      ORDER BY created_at
+    `, [dateIso], (err, rows) => {
+      if (err) { logger.error(err); return resolve(null); }
+
+      // Готовим детализированные строки
+      const detailRows = rows.map(r => {
+        const msk = DateTime.fromISO(r.created_at, { zone: 'utc' }).setZone('Europe/Moscow');
+        return {
+          timestamp: msk.toFormat('yyyy-MM-dd HH:mm:ss'),
+          hour: String(msk.hour).padStart(2, '0'),
+          type: r.type,
+          id: r.id,
+          subject: r.subject || '',
+        };
       });
+
+      // Считаем summary
+      const summaryMap = {};
+      for (const r of detailRows) {
+        const key = `${r.hour},${r.type}`;
+        summaryMap[key] = (summaryMap[key] || 0) + 1;
+      }
+      const summaryRows = Object.entries(summaryMap).map(([key, cnt]) => {
+        const [hour, type] = key.split(',');
+        return { hour, type, cnt };
+      }).sort((a, b) => a.hour.localeCompare(b.hour) || a.type.localeCompare(b.type));
+
+      // Функция для CSV-экранирования (кавычки удваиваются, поля в кавычки)
+      const esc = v =>
+        `"${String(v).replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`;
+
+      // Формируем CSV с BOM, summary и деталями
+      let csv = '\uFEFF' +
+        '# Сводка по часам (МСК)\r\n' +
+        'hour,type,count\r\n' +
+        summaryRows.map(r => [esc(r.hour), esc(r.type), esc(r.cnt)].join(',')).join('\r\n') +
+        '\r\n\r\n# Детализация (timestamp МСК, type, id, subject)\r\n' +
+        'timestamp,type,id,subject\r\n' +
+        detailRows.map(r =>
+          [esc(r.timestamp), esc(r.type), esc(r.id), esc(r.subject)].join(',')
+        ).join('\r\n');
+
+      const dir = path.join(__dirname, 'reports');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const fileName = `errors_${dateIso}_${new Date().toISOString().slice(11,13)}00.csv`;
+      const filePath = path.join(dir, fileName);
+      fs.writeFileSync(filePath, csv, 'utf8');
+      resolve({ filePath, fileName });
+    });
   });
 }
+
 async function safeSendMessage(chatId, text, options = {}) {
   logger.debug(`[send] Проверка дубликата для chat_id=${chatId}`);
   const hash = crypto.createHash('sha256').update(text).digest('hex');
