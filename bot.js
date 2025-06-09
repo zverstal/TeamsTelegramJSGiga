@@ -162,18 +162,22 @@ async function fetchTeamsMessages(token,teamId,channelId){
 function classifyError(msg){ const l=msg.body.toLowerCase(); if(msg.subject.includes('STOPAZART')) return {type:'STOPAZART',id:l.match(/id игрока[:\s]*([0-9]+)/i)?.[1]||'не найден'}; if(msg.subject.includes('SmartBridge')) return {type:'SmartBridge',id:l.match(/номер транзакции\s*([0-9]+)/i)?.[1]||'не найден'}; if(msg.subject.includes('реестре должников')) return {type:'Реестр должников',id:l.match(/id игрока[:\s]*([0-9]+)/i)?.[1]||'не найден'}; return{type:'Другое',id:'N/A'}; }
 
 /* ---------------------------------------------------------
-   6)  Summarisation prompt                                 
+   7)  Summarisation (полный промт)                         
 ----------------------------------------------------------*/
 async function summarizeMessages(messages, lastMsgId) {
   if (!messages.length) return null;
 
   // Формируем список сообщений для промта
   const list = messages.map((msg) => {
-    const reply = msg.isReply ? 'Тип: Ответ (тема из контекста предыдущего сообщения)' : '';
+    const reply = msg.isReply ? '
+Тип: Ответ (тема из контекста предыдущего сообщения)' : '';
     return `ID: ${msg.id}
 Отправитель: ${msg.sender}
 Тема: ${msg.subject}${reply}
-Текст сообщения: ${msg.body}`;}).join('');
+Текст сообщения: ${msg.body}`;
+  }).join('
+
+');
 
   // Полный неизменённый промт
   const prompt = `
@@ -241,8 +245,7 @@ async function sendErrorSummaryIfNeeded(){
   logger.info(`Preparing hourly summary: ${subjectsCnt} subjects, ${totalErrors} errors`);
 
   // build message text
-  let txt='🔍 *Сводка ошибок за последний час:*
-';
+  let txt='🔍 *Сводка ошибок за последний час:*';
   for(const[s,d] of Object.entries(grouped)) txt+=`📌 *${s}* — ${d.cnt}
 `;
 
