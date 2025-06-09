@@ -268,22 +268,25 @@ bot.on('callback_query:data', async ctx => {
   logger.info(`[CSV] Отчёт отправлен (${res.fileName})`);
 });
 
-/* -------- 11. Главный цикл -------- */
 async function processTeamsMessages() {
   logger.info('[loop] Чтение новых сообщений');
   const token = await getMicrosoftToken();
   if (!token) return;
   const msgs = await fetchTeamsMessages(token, process.env.TEAM_ID, process.env.CHANNEL_ID);
   if (!msgs.length) return;
-  let startIdx = 0;
-  if (lastProcessedMessageId) {
-    startIdx = msgs.findIndex(m => m.id === lastProcessedMessageId) + 1;
-    if (startIdx < 0) startIdx = 0;
-  }
-  const newMsgs = msgs.slice(startIdx);
+
+  // ВНИМАНИЕ: ids — строки, но мы сравниваем лексикографически, что для UUID подходит
+  const newMsgs = lastProcessedMessageId
+    ? msgs.filter(m => m.id > lastProcessedMessageId)
+    : msgs;
+
   if (!newMsgs.length) { logger.info('[loop] Нет новых сообщений'); return; }
-  lastProcessedMessageId = newMsgs[newMsgs.length - 1].id;
+
+  // ВАЖНО! Ищем максимальный id (он будет в последнем элементе, если сортировка гарантирована)
+  // Обычно Graph отдаёт от новых к старым — значит newMsgs[0] — самый свежий
+  lastProcessedMessageId = newMsgs[0].id;
   await saveState();
+
   const errors = newMsgs.filter(m => m.isError), ordinary = newMsgs.filter(m => !m.isError);
   for (const m of errors) {
     const { type, id } = classifyError(m);
