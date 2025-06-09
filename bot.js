@@ -287,7 +287,7 @@ async function sendErrorSummaryIfNeeded() {
   const msg = await safeSendMessage(
     process.env.TELEGRAM_CHAT_ID,
     txt,
-    { parse_mode: 'Markdown', reply_markup: new InlineKeyboard().text('📥 CSV за день', 'csv_today') }
+    { parse_mode: 'Markdown'}
   );
   if (msg) {
     logger.info(`[hourly] Сводка отправлена (message_id=${msg.message_id})`);
