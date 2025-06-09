@@ -17,14 +17,29 @@ const winston = require('winston');
 /* ---------------------------------------------------------
    0)  Logger                                               
 ----------------------------------------------------------*/
+// ensure ./logs directory exists before creating logger
+const logDir = path.join(__dirname, 'logs');
+if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
   format: winston.format.combine(
-    winston.format.colorize(),
     winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
     winston.format.printf(({ timestamp, level, message }) => `${timestamp} [${level}] ${message}`)
   ),
-  transports: [new winston.transports.Console()],
+  transports: [
+    // console with colours (only for development)
+    new winston.transports.Console({
+      format: winston.format.combine(
+        winston.format.colorize({ all: true }),
+        winston.format.printf(({ timestamp, level, message }) => `${timestamp} [${level}] ${message}`)
+      ),
+    }),
+    // file transport: all logs (rotated daily by logrotate or external tool)
+    new winston.transports.File({ filename: path.join(logDir, 'app.log') }),
+    // file transport: only errors
+    new winston.transports.File({ filename: path.join(logDir, 'error.log'), level: 'error' }),
+  ],
 });
 
 /* ---------------------------------------------------------
@@ -149,7 +164,58 @@ function classifyError(msg){ const l=msg.body.toLowerCase(); if(msg.subject.incl
 /* ---------------------------------------------------------
    6)  Summarisation prompt                                 
 ----------------------------------------------------------*/
-async function summarizeMessages(messages,lastId){ if(!messages.length)return null; const list=messages.map(m=>{const r=m.isReply?'\nТип: Ответ (тема из контекста предыдущего сообщения)':'';return`ID: ${m.id}\nОтправитель: ${m.sender}\nТема: ${m.subject}${r}\nТекст сообщения: ${m.body}`}).join('\n\n'); const prompt=`(Последний обработанный ID: ${lastId})\n\nПроанализируй следующие сообщения из Teams...\n\n${list}`; try{ const res=await axios.post('https://api.openai.com/v1/chat/completions',{model:'gpt-4o-mini',messages:[{role:'user',content:prompt}],temperature:0,max_tokens:1000},{headers:{Authorization:`Bearer ${process.env.OPENAI_API_KEY}`},httpsAgent:new https.Agent({rejectUnauthorized:false})}); return res.data.choices[0]?.message?.content||'';}catch(e){logger.error(e);return null;} }
+async function summarizeMessages(messages, lastMsgId) {
+  if (!messages.length) return null;
+
+  // Формируем список сообщений для промта
+  const list = messages.map((msg) => {
+    const reply = msg.isReply ? 'Тип: Ответ (тема из контекста предыдущего сообщения)' : '';
+    return `ID: ${msg.id}
+Отправитель: ${msg.sender}
+Тема: ${msg.subject}${reply}
+Текст сообщения: ${msg.body}`;}).join('');
+
+  // Полный неизменённый промт
+  const prompt = `
+(Последний обработанный ID: ${lastMsgId})
+
+Проанализируй следующие сообщения из Teams. Для каждого сообщения, идентифицированного по уникальному ID, составь краткое, точное и понятное резюме, строго опираясь на фактическое содержание. Если сообщение является ответом (Тип: Ответ), обязательно укажи, что оно является ответом и что тема берётся из контекста предыдущего сообщения.
+
+Правила:
+1. ID сообщения: обязательно укажи уникальный идентификатор.
+2. Отправитель: укажи email отправителя; если возможно, добавь ФИО, должность и название компании (на основе подписи или домена почты).
+3. Тема: если тема явно указана или может быть определена из контекста, укажи её. Для ответов укажи, что тема берётся из предыдущего сообщения.
+4. Содержание: составь одно‑два предложения, точно передающих суть сообщения, сохраняя все технические детали и вопросы. Не пересказывай сообщение слишком сильно.
+5. Игнорируй элементы, не влияющие на понимание сути (например, стандартные подписи, ссылки и неинформативные фразы).
+
+Составь резюме для следующих сообщений:
+
+${list}
+`.trim();
+
+  try {
+    const res = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+        max_tokens: 1000,
+      },
+      {
+        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+        httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+      }
+    );
+    return res.data.choices[0]?.message?.content || '';
+  } catch (err) {
+    logger.error(`OpenAI summarization error: ${err}`);
+    return null;
+  }
+}
+
+// ======= конец summarizeMessages и далее идёт остальной код =======
+
 
 /* ---------------------------------------------------------
    7)  Runtime queues                                       
@@ -160,7 +226,43 @@ function logErrorEvent(msg){ db.run(`INSERT INTO error_events(subject,type,extra
 /* ---------------------------------------------------------
    8)  Hourly summary (button 👉 CSV)                        
 ----------------------------------------------------------*/
-async function sendErrorSummaryIfNeeded(){ if(!collectedErrors.length)return; const grouped={}; collectedErrors.forEach(e=>{ if(!grouped[e.subject]) grouped[e.subject]={cnt:0,last:e.createdDateTime}; grouped[e.subject].cnt++; grouped[e.subject].last=e.createdDateTime;}); let txt='🔍 *Сводка ошибок за последний час:*\n'; for(const[s,d] of Object.entries(grouped)){ txt+=`📌 *${s}* — ${d.cnt}\n`; }
+async function sendErrorSummaryIfNeeded(){
+  if(!collectedErrors.length){ logger.debug('Hourly summary skipped: no new errors'); return; }
+
+  // group by subject
+  const grouped = {};
+  collectedErrors.forEach(e=>{
+    if(!grouped[e.subject]) grouped[e.subject]={cnt:0,last:e.createdDateTime};
+    grouped[e.subject].cnt++; grouped[e.subject].last=e.createdDateTime;
+  });
+
+  const totalErrors = collectedErrors.length;
+  const subjectsCnt = Object.keys(grouped).length;
+  logger.info(`Preparing hourly summary: ${subjectsCnt} subjects, ${totalErrors} errors`);
+
+  // build message text
+  let txt='🔍 *Сводка ошибок за последний час:*
+';
+  for(const[s,d] of Object.entries(grouped)) txt+=`📌 *${s}* — ${d.cnt}
+`;
+
+  // send
+  const msg = await safeSendMessage(
+    process.env.TELEGRAM_CHAT_ID,
+    txt,
+    { parse_mode:'Markdown', reply_markup:new InlineKeyboard().text('📥 CSV за день','csv_today') }
+  );
+
+  if(msg){
+    logger.info(`Hourly summary sent (message_id=${msg.message_id})`);
+    db.run(`INSERT INTO error_summaries(chat_id,message_id,summary_text,created_at) VALUES(?,?,?,?)`,
+      [String(msg.chat.id),String(msg.message_id),txt,new Date().toISOString()]);
+  } else {
+    logger.warn('Hourly summary was skipped by dup‑guard');
+  }
+
+  collectedErrors.length = 0; // reset queue
+}; collectedErrors.forEach(e=>{ if(!grouped[e.subject]) grouped[e.subject]={cnt:0,last:e.createdDateTime}; grouped[e.subject].cnt++; grouped[e.subject].last=e.createdDateTime;}); let txt='🔍 *Сводка ошибок за последний час:*\n'; for(const[s,d] of Object.entries(grouped)){ txt+=`📌 *${s}* — ${d.cnt}\n`; }
   const msg=await safeSendMessage(process.env.TELEGRAM_CHAT_ID,txt,{parse_mode:'Markdown',reply_markup:new InlineKeyboard().text('📥 CSV за день', 'csv_today')});
   if(msg) db.run(`INSERT INTO error_summaries(chat_id,message_id,summary_text,created_at) VALUES(?,?,?,?)`,[String(msg.chat.id),String(msg.message_id),txt,new Date().toISOString()]);
   collectedErrors.length=0;
@@ -185,7 +287,15 @@ bot.on('callback_query:data',async ctx=>{
 async function processTeamsMessages(){ const token=await getMicrosoftToken(); if(!token)return; const msgs=await fetchTeamsMessages(token,process.env.TEAM_ID,process.env.CHANNEL_ID); if(!msgs.length)return; const newMsgs=msgs.filter(m=>!lastProcessedMessageId||m.id>lastProcessedMessageId); if(!newMsgs.length)return; lastProcessedMessageId=newMsgs[newMsgs.length-1].id; await saveLastId(lastProcessedMessageId);
   const errors=newMsgs.filter(m=>m.isError); const ordinary=newMsgs.filter(m=>!m.isError);
   for(const m of errors){ const {type,id}=classifyError(m); m.type=type; m.extractedId=id; logErrorEvent(m); if(!processedErrorSubjects.has(m.subject)){ await safeSendMessage(process.env.TELEGRAM_CHAT_ID,`❗ *Новая ошибка:* ${m.subject}`,{parse_mode:'Markdown'}); processedErrorSubjects.add(m.subject); await persistSubjects(); } else { collectedErrors.push(m);} }
-  if(ordinary.length){ const sum=await summarizeMessages(ordinary,lastProcessedMessageId); if(sum) await safeSendMessage(process.env.TELEGRAM_CHAT_ID,`📝 *Суммаризация сообщений:*\n\n${sum}`,{parse_mode:'Markdown'}); }
+  if(ordinary.length){
+    const sum = await summarizeMessages(ordinary,lastProcessedMessageId);
+    if(sum){
+      const sent = await safeSendMessage(process.env.TELEGRAM_CHAT_ID,`📝 *Суммаризация сообщений:*
+
+${sum}`,{parse_mode:'Markdown'});
+      if(sent) logger.info(`Teams messages summary sent (message_id=${sent.message_id}, items=${ordinary.length})`);
+    }
+  }`,{parse_mode:'Markdown'}); }
 }
 
 /* ---------------------------------------------------------
