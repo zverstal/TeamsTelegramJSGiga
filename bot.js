@@ -73,19 +73,25 @@ function buildCsv(rows) {
   return ['hour,type,count', ...rows.map(r => `${r.hour},${r.type},${r.cnt}`)].join('\n');
 }
 
-// Экспортирует summary и детали в один CSV, без кракозябр, с BOM и кавычками
 async function generateCsvForDate(dateIso) {
   return new Promise((resolve) => {
     db.all(`
       SELECT created_at, type, extracted_id as id, subject
       FROM error_events
-      WHERE date(created_at, 'localtime') = ?
       ORDER BY created_at
-    `, [dateIso], (err, rows) => {
+    `, [], (err, rows) => {
       if (err) { logger.error(err); return resolve(null); }
 
+      const targetDate = DateTime.fromISO(dateIso, { zone: 'Europe/Moscow' });
+
+      // Фильтруем по дате в МСК
+      const filtered = rows.filter(r => {
+        const msk = DateTime.fromISO(r.created_at, { zone: 'utc' }).setZone('Europe/Moscow');
+        return msk.hasSame(targetDate, 'day');
+      });
+
       // Готовим детализированные строки
-      const detailRows = rows.map(r => {
+      const detailRows = filtered.map(r => {
         const msk = DateTime.fromISO(r.created_at, { zone: 'utc' }).setZone('Europe/Moscow');
         return {
           timestamp: msk.toFormat('yyyy-MM-dd HH:mm:ss'),
@@ -107,11 +113,10 @@ async function generateCsvForDate(dateIso) {
         return { hour, type, cnt };
       }).sort((a, b) => a.hour.localeCompare(b.hour) || a.type.localeCompare(b.type));
 
-      // Функция для CSV-экранирования (кавычки удваиваются, поля в кавычки)
-      const esc = v =>
-        `"${String(v).replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`;
+      // CSV-экранирование
+      const esc = v => `"${String(v).replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`;
 
-      // Формируем CSV с BOM, summary и деталями
+      // Формируем CSV с BOM
       let csv = '\uFEFF' +
         '# Сводка по часам (МСК)\r\n' +
         'hour,type,count\r\n' +
@@ -124,7 +129,7 @@ async function generateCsvForDate(dateIso) {
 
       const dir = path.join(__dirname, 'reports');
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const fileName = `errors_${dateIso}_${new Date().toISOString().slice(11,13)}00.csv`;
+      const fileName = `errors_${dateIso}_${new Date().toISOString().slice(11, 13)}00.csv`;
       const filePath = path.join(dir, fileName);
       fs.writeFileSync(filePath, csv, 'utf8');
       resolve({ filePath, fileName });
