@@ -303,13 +303,33 @@ async function sendErrorSummaryIfNeeded() {
 bot.on('callback_query:data', async ctx => {
   const data = ctx.callbackQuery.data;
   if (!data.startsWith('csv')) return ctx.answerCallbackQuery({ text: '🤔 Неизвестная команда', show_alert: true });
+
   await ctx.answerCallbackQuery();
-  const dateIso = todayStr();
+
+  let dateIso = todayStr();
+  if (data === 'csv:today') dateIso = todayStr();
+  // здесь можно потом добавить поддержку других дат, если понадобится
+
   const res = await generateCsvForDate(dateIso);
-  if (!res) { await ctx.reply('Не удалось сформировать CSV'); return; }
-  await bot.api.sendDocument(ctx.chat.id, new InputFile(fs.createReadStream(res.filePath), res.fileName), { caption: `📊 CSV‑отчёт за ${dateIso}` });
+  if (!res) {
+    await ctx.reply('❌ Не удалось сформировать CSV');
+    return;
+  }
+
+  await bot.api.sendDocument(ctx.chat.id, new InputFile(fs.createReadStream(res.filePath), res.fileName), {
+    caption: `📊 CSV‑отчёт за ${dateIso}`
+  });
   logger.info(`[CSV] Отчёт отправлен (${res.fileName})`);
 });
+
+
+
+bot.command('csv_button', async ctx => {
+  await ctx.reply('📥 Нажми кнопку ниже, чтобы получить CSV‑отчёт за сегодня', {
+    reply_markup: new InlineKeyboard().text('📊 Получить CSV', 'csv:today')
+  });
+});
+
 
 async function processTeamsMessages() {
   logger.info('[loop] Чтение новых сообщений');
@@ -355,10 +375,10 @@ async function processTeamsMessages() {
 /* -------- 12. CRON -------- */
 cron.schedule('* * * * *', () => processTeamsMessages());
 cron.schedule('0 * * * *', () => sendErrorSummaryIfNeeded());
-cron.schedule('0 * * * *', async () => {
-  const { filePath, fileName } = await generateCsvForDate(todayStr());
-  if (filePath) await bot.api.sendDocument(process.env.TELEGRAM_CHAT_ID, new InputFile(fs.createReadStream(filePath), fileName), { caption: `📊 Авто‑CSV за ${todayStr()}` });
-});
+// cron.schedule('0 * * * *', async () => {
+//   const { filePath, fileName } = await generateCsvForDate(todayStr());
+//   if (filePath) await bot.api.sendDocument(process.env.TELEGRAM_CHAT_ID, new InputFile(fs.createReadStream(filePath), fileName), { caption: `📊 Авто‑CSV за ${todayStr()}` });
+// });
 
 /* -------- 13. Команды -------- */
 bot.command('start', ctx => ctx.reply('✅ Бот активен.'));
