@@ -129,7 +129,8 @@ async function generateCsvForDate(dateIso) {
 
       const dir = path.join(__dirname, 'reports');
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const fileName = `errors_${dateIso}_${new Date().toISOString().slice(11, 13)}00.csv`;
+      const mskHour = DateTime.utc().setZone('Europe/Moscow').toFormat('HH');
+      const fileName = `errors_${dateIso}_${mskHour}00.csv`;
       const filePath = path.join(dir, fileName);
       fs.writeFileSync(filePath, csv, 'utf8');
       resolve({ filePath, fileName });
